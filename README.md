@@ -58,23 +58,32 @@ models:
     api_base: https://spark-api-open.xf-yun.com/x2/
     api_key: your_api_key
     model: spark-x
-    prompt_lang: zh
+    prompt_name: zh
     enable_thinking: true
 
   - name: gpt-4o
     api_base: https://api.openai.com/v1
     api_key: sk-xxxxxxxxxxxxxxxx
     model: gpt-4o
-    prompt_lang: zh
+    prompt_name: zh
     enable_thinking: true
 ```
 
 说明：
 
 - `api_base` 直接传给 OpenAI SDK 的 `base_url`
-- `prompt_lang` 可选，支持 `zh` / `en`
+- `prompt_name` 可选，对应 `prompts/` 目录下的 prompt 文件名
 - `enable_thinking` 可选，默认 `true`
-- 对于讯飞星火这类兼容接口，思考模式会通过 `extra_body={"thinking": {"type": "enabled|disabled"}}` 下发
+
+## Prompt Files
+
+- Prompt 现在从 `prompts/*.yaml` 文件加载，不再内置 `zh` / `en` 开关。
+- 当前内置了 `prompts/zh.yaml` 和 `prompts/en.yaml`，分别对应之前的中文和英文 prompt。
+- 每个 prompt 文件包含：
+  - `system_prompt`
+  - `turn_prompt`
+  - `tool_retry_prompt`
+- UI 和 `config.yaml` 里的 `prompt_name` 都是按文件名选择 prompt。
 
 ## 页面使用
 
@@ -83,7 +92,7 @@ models:
    - 可选预设模型
    - 或使用自定义 `API Base URL / API Key / Model`
    - 可设置 `Thinking Mode`
-   - 可设置 `Prompt Language`
+   - 可设置 `Prompt`
 3. 输入 FEN，或直接点击 `Init`
 4. 点击 `Start`
 5. 开局后如果当前在“设置”页，会自动切换到“记录”页
@@ -100,7 +109,7 @@ models:
 
 注意：
 
-- Prompt 语言由 UI 或 `config.yaml` 控制
+- Prompt 由 UI 或 `config.yaml` 中的 `prompt_name` 选择
 - 思考模式不再通过 prompt 暗示
 - 思考模式只作为模型调用参数传递
 
@@ -125,6 +134,7 @@ red-Human_vs_black-LLM-spark-x_20260326-191530_ab12cd34.log
   - tool_result
   - move
   - turn / waiting_human / game_over
+- 连续的 thinking / reasoning 流式片段会在保存时合并，避免日志中出现碎片化换行
 
 ## 项目结构
 
@@ -133,6 +143,10 @@ XiangqiArena/
 ├── server.py
 ├── xiangqi.py
 ├── llm_client.py
+├── prompt_registry.py
+├── prompts/
+│   ├── zh.yaml
+│   └── en.yaml
 ├── config.example.yaml
 ├── config.yaml
 ├── requirements.txt

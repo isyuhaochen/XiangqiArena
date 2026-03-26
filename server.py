@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from xiangqi import Board
 from llm_client import LLMPlayer
+from prompt_registry import get_default_prompt_name, get_prompt_profile, list_prompt_profiles, resolve_prompt_name
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -53,7 +54,7 @@ def load_model_presets() -> list[dict]:
                     "api_base": m.get("api_base", ""),
                     "api_key": m.get("api_key", ""),
                     "model": m.get("model", m["name"]),
-                    "prompt_lang": m.get("prompt_lang", "zh"),
+                    "prompt_name": resolve_prompt_name(m.get("prompt_name"), m.get("prompt_lang")),
                     "enable_thinking": m.get("enable_thinking", True),
                     "max_completion_tokens": m.get("max_completion_tokens", m.get("max_output_tokens", 8192)),
                 })
@@ -106,11 +107,32 @@ def _append_indented_block(lines: list[str], header: str, content: str):
         lines.append(f"    {part}")
 
 
+def _merged_stream_events(events: list[dict]) -> list[dict]:
+    merged = []
+    for event in events:
+        if (
+            merged
+            and event.get("type") in {"thinking", "reasoning"}
+            and merged[-1].get("type") == event.get("type")
+            and merged[-1].get("side") == event.get("side")
+        ):
+            merged[-1]["content"] = f"{merged[-1].get('content', '')}{event.get('content', '')}"
+            continue
+        merged.append(dict(event))
+
+    for event in merged:
+        if event.get("type") in {"thinking", "reasoning"}:
+            text = str(event.get("content", "")).replace("\r\n", "\n").strip("\n")
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            event["content"] = text
+    return merged
+
+
 def _append_event_log(lines: list[str], events: list[dict]):
     """Append streamed thinking/tool events to the saved log."""
     lines.append("Detailed Event Log:")
 
-    for event in events:
+    for event in _merged_stream_events(events):
         event_type = event.get("type")
         side = event.get("side", "-")
 
@@ -119,9 +141,11 @@ def _append_event_log(lines: list[str], events: list[dict]):
         elif event_type == "waiting_human":
             lines.append(f"  [{side}] waiting_human")
         elif event_type == "thinking":
-            _append_indented_block(lines, f"  [{side}] thinking:", event.get("content", ""))
+            if event.get("content", ""):
+                _append_indented_block(lines, f"  [{side}] thinking:", event.get("content", ""))
         elif event_type == "reasoning":
-            _append_indented_block(lines, f"  [{side}] reasoning:", event.get("content", ""))
+            if event.get("content", ""):
+                _append_indented_block(lines, f"  [{side}] reasoning:", event.get("content", ""))
         elif event_type == "tool_call":
             args_text = json.dumps(event.get("args", {}), ensure_ascii=False)
             lines.append(f"  [{side}] tool_call: {event.get('tool', '')}({args_text})")
@@ -151,7 +175,7 @@ def _player_config_summary(config) -> dict:
             "preset": config.preset,
             "api_base": config.api_base,
             "model": config.model,
-            "prompt_lang": config.prompt_lang,
+            "prompt_name": _resolved_prompt_name(config),
             "enable_thinking": config.enable_thinking,
             "max_completion_tokens": _resolved_max_completion_tokens(config),
             "api_key_masked": _mask_secret(config.api_key),
@@ -206,7 +230,8 @@ class PlayerConfig(BaseModel):
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
-    prompt_lang: str = "zh"  # en | zh
+    prompt_name: Optional[str] = None
+    prompt_lang: Optional[str] = None  # legacy fallback
     enable_thinking: Optional[bool] = None
     max_completion_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
@@ -214,6 +239,19 @@ class PlayerConfig(BaseModel):
 
 def _resolved_max_completion_tokens(config: PlayerConfig) -> int:
     return config.max_completion_tokens or config.max_output_tokens or 8192
+
+
+def _resolved_prompt_name(config: PlayerConfig) -> str:
+    return resolve_prompt_name(config.prompt_name, config.prompt_lang)
+
+
+def _validate_prompt_config(config: PlayerConfig):
+    if config.type != "llm":
+        return
+    try:
+        get_prompt_profile(_resolved_prompt_name(config))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 class CreateGameRequest(BaseModel):
@@ -358,7 +396,7 @@ async def _game_loop_inner(game: GameSession):
                     api_base=config.api_base,
                     api_key=config.api_key,
                     model=config.model,
-                    prompt_lang=config.prompt_lang or "zh",
+                    prompt_name=_resolved_prompt_name(config),
                     enable_thinking=True if config.enable_thinking is None else config.enable_thinking,
                     max_completion_tokens=_resolved_max_completion_tokens(config),
                 )
@@ -462,12 +500,28 @@ async def get_presets():
         "presets": [
             {
                 "name": p["name"],
-                "prompt_lang": p.get("prompt_lang", "zh"),
+                "prompt_name": p.get("prompt_name", get_default_prompt_name()),
                 "enable_thinking": p.get("enable_thinking", True),
                 "max_completion_tokens": p.get("max_completion_tokens", 8192),
             }
             for p in presets
         ]
+    }
+
+
+@app.get("/api/prompts")
+async def get_prompts():
+    prompts = list_prompt_profiles()
+    return {
+        "default_prompt_name": get_default_prompt_name(),
+        "prompts": [
+            {
+                "name": prompt["name"],
+                "display_name": prompt.get("display_name", prompt["name"]),
+                "description": prompt.get("description", ""),
+            }
+            for prompt in prompts
+        ],
     }
 
 
@@ -484,7 +538,10 @@ def resolve_preset(config: PlayerConfig) -> PlayerConfig:
                 api_base=p["api_base"],
                 api_key=p["api_key"],
                 model=p["model"],
-                prompt_lang=config.prompt_lang or p.get("prompt_lang", "zh"),
+                prompt_name=resolve_prompt_name(
+                    config.prompt_name or p.get("prompt_name"),
+                    config.prompt_lang,
+                ),
                 enable_thinking=(
                     config.enable_thinking
                     if config.enable_thinking is not None
@@ -510,6 +567,8 @@ async def create_game(req: CreateGameRequest):
 
     red = resolve_preset(req.red)
     black = resolve_preset(req.black)
+    _validate_prompt_config(red)
+    _validate_prompt_config(black)
 
     game_id = str(uuid.uuid4())[:8]
     game = GameSession(game_id, req.fen, red, black)

@@ -8,7 +8,7 @@ models:
   #   api_base: https://api.openai.com/v1
   #   api_key: sk-xxxxxxxxxxxxxxxx
   #   model: gpt-4o
-  #   prompt_lang: zh
+  #   prompt_name: zh
   #   enable_thinking: true
   #   max_completion_tokens: 8192
 
@@ -17,7 +17,7 @@ models:
   #   api_base: https://api.deepseek.com/v1
   #   api_key: sk-xxxxxxxxxxxxxxxx
   #   model: deepseek-chat
-  #   prompt_lang: zh
+  #   prompt_name: zh
   #   enable_thinking: true
   #   max_completion_tokens: 8192
 
@@ -26,6 +26,6 @@ models:
   #   api_base: http://localhost:11434/v1
   #   api_key: ollama
   #   model: qwen2.5:7b
-  #   prompt_lang: zh
+  #   prompt_name: zh
   #   enable_thinking: true
   #   max_completion_tokens: 8192

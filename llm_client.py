@@ -8,6 +8,7 @@ import re
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
+from prompt_registry import get_prompt_profile
 from xiangqi import Board, PIECE_NAMES_ZH
 
 
@@ -30,52 +31,6 @@ TOOL_DEFINITIONS = [
         },
     }
 ]
-
-
-SYSTEM_PROMPT_TEMPLATE = """You are a Chinese Chess (Xiangqi) master playing as {side_name}.
-
-Current position (FEN): {fen}
-Opponent's previous move: {last_opponent_move}
-
-ACCURATE PIECE POSITIONS (authoritative; use these as the ground truth):
-{piece_positions}
-
-PIECE NOTATION:
-- Uppercase = Red: K(King), A(Advisor), B(Bishop), N(Knight), R(Rook), C(Cannon), P(Pawn)
-- Lowercase = Black: k(King), a(Advisor), b(Bishop), n(Knight), r(Rook), c(Cannon), p(Pawn)
-
-COORDINATE SYSTEM (ICCS):
-- Columns: a(leftmost) to i(rightmost)
-- Rows: 0(red's back rank) to 9(black's back rank)
-- Move format: source_col + source_row + dest_col + dest_row (e.g., h2e2)
-
-LEGAL MOVES for {side_name} ({legal_move_count} total):
-{legal_moves}
-
-It is {side_name}'s turn to move. Analyze the position carefully, consider threats and opportunities, then call make_move with your chosen move."""
-
-
-SYSTEM_PROMPT_TEMPLATE_ZH = """你是一位中国象棋大师，执{side_name_zh}。
-
-当前局面（FEN）：{fen}
-对手上一手：{last_opponent_move}
-
-准确棋子位置（以此为准）：
-{piece_positions}
-
-棋子记号说明：
-- 大写字母 = 红方：K(帅), A(仕), B(相), N(马), R(车), C(炮), P(兵)
-- 小写字母 = 黑方：k(将), a(士), b(象), n(马), r(车), c(炮), p(卒)
-
-坐标系统（ICCS）：
-- 列：a（最左）到 i（最右）
-- 行：0（红方底线）到 9（黑方底线）
-- 走法格式：起点列 + 起点行 + 终点列 + 终点行，例如 h2e2
-
-{side_name_zh}当前合法走法（共 {legal_move_count} 步）：
-{legal_moves}
-
-现在轮到{side_name_zh}走棋。请仔细分析局面，考虑威胁和机会，然后调用 make_move 工具提交你的走法。"""
 
 
 ICCS_PATTERN = re.compile(r"[a-i][0-9][a-i][0-9]")
@@ -111,11 +66,12 @@ def _get_last_opponent_move(board: Board) -> str:
     return board.move_history[-1].get("move", "")
 
 
-def build_system_prompt(board: Board, side: str, lang: str = "zh") -> str:
+def _build_prompt_params(board: Board, side: str, prompt_name: str | None = None) -> tuple[dict, dict]:
     side_name = "Red" if side == "w" else "Black"
     side_name_zh = "红方" if side == "w" else "黑方"
     legal_moves = board.get_legal_moves()
-    legal_moves_text = ", ".join(legal_moves) if legal_moves else ("无" if lang == "zh" else "(none)")
+    prompt_profile = get_prompt_profile(prompt_name)
+    legal_moves_text = ", ".join(legal_moves) if legal_moves else prompt_profile.get("empty_legal_moves_text", "(none)")
 
     params = dict(
         side_name=side_name,
@@ -126,20 +82,22 @@ def build_system_prompt(board: Board, side: str, lang: str = "zh") -> str:
         legal_moves=legal_moves_text,
         legal_move_count=len(legal_moves),
     )
-    template = SYSTEM_PROMPT_TEMPLATE_ZH if lang == "zh" else SYSTEM_PROMPT_TEMPLATE
-    return template.format(**params)
+    return prompt_profile, params
 
 
-def _turn_prompt(side: str, lang: str) -> str:
-    if lang == "zh":
-        return f"现在轮到你（{'红方' if side == 'w' else '黑方'}）。请分析局面并提交你的走法。"
-    return f"It is your turn ({'Red' if side == 'w' else 'Black'}). Please analyze and make your move."
+def build_system_prompt(board: Board, side: str, prompt_name: str | None = None) -> str:
+    prompt_profile, params = _build_prompt_params(board, side, prompt_name)
+    return prompt_profile["system_prompt"].format(**params)
 
 
-def _tool_retry_prompt(lang: str) -> str:
-    if lang == "zh":
-        return "你必须使用 make_move 工具来提交走法。请用 ICCS 格式调用 make_move，例如 h2e2。"
-    return "You must use the make_move tool to submit your move. Please call make_move with your chosen move in ICCS format."
+def _turn_prompt(board: Board, side: str, prompt_name: str | None = None) -> str:
+    prompt_profile, params = _build_prompt_params(board, side, prompt_name)
+    return prompt_profile["turn_prompt"].format(**params)
+
+
+def _tool_retry_prompt(board: Board, side: str, prompt_name: str | None = None) -> str:
+    prompt_profile, params = _build_prompt_params(board, side, prompt_name)
+    return prompt_profile["tool_retry_prompt"].format(**params)
 
 
 def _supports_thinking_control(api_base: str, model: str) -> bool:
@@ -179,7 +137,7 @@ class LLMPlayer:
         model: str,
         timeout: float = 120.0,
         max_tool_rounds: int = 10,
-        prompt_lang: str = "zh",
+        prompt_name: str = "zh",
         enable_thinking: bool = True,
         max_completion_tokens: int = 8192,
     ):
@@ -188,7 +146,7 @@ class LLMPlayer:
         self.model = model
         self.timeout = timeout
         self.max_tool_rounds = max_tool_rounds
-        self.prompt_lang = prompt_lang
+        self.prompt_name = prompt_name
         self.enable_thinking = enable_thinking
         self.max_completion_tokens = max_completion_tokens
 
@@ -295,10 +253,10 @@ class LLMPlayer:
         Async generator that yields events as the LLM interaction proceeds.
         Events: {type: "thinking"|"tool_call"|"tool_result"|"move"|"error", ...}
         """
-        system_prompt = build_system_prompt(board, side, self.prompt_lang)
+        system_prompt = build_system_prompt(board, side, self.prompt_name)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": _turn_prompt(side, self.prompt_lang)},
+            {"role": "user", "content": _turn_prompt(board, side, self.prompt_name)},
         ]
 
         for round_num in range(self.max_tool_rounds):
@@ -380,7 +338,7 @@ class LLMPlayer:
                 messages.append(
                     {
                         "role": "user",
-                        "content": _tool_retry_prompt(self.prompt_lang),
+                        "content": _tool_retry_prompt(board, side, self.prompt_name),
                     }
                 )
                 continue

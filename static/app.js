@@ -18,6 +18,8 @@ const state = {
 
 let renderer = null;
 const presetConfigs = {};
+let availablePrompts = [];
+let defaultPromptName = 'zh';
 
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -30,18 +32,57 @@ function switchTab(tabName) {
 
 function applyLlmOptionDefaults(side, presetName = null) {
     const thinkingEl = document.getElementById(`${side}-thinking-mode`);
-    const promptLangEl = document.getElementById(`${side}-prompt-lang`);
-    if (!thinkingEl || !promptLangEl) return;
+    const promptEl = document.getElementById(`${side}-prompt-name`);
+    if (!thinkingEl || !promptEl) return;
 
     if (!presetName || !presetConfigs[presetName]) {
         thinkingEl.value = 'true';
-        promptLangEl.value = 'zh';
+        setSelectValue(promptEl, defaultPromptName, defaultPromptName);
         return;
     }
 
     const preset = presetConfigs[presetName];
     thinkingEl.value = String(preset.enable_thinking !== false);
-    promptLangEl.value = preset.prompt_lang || 'zh';
+    setSelectValue(promptEl, preset.prompt_name || defaultPromptName, defaultPromptName);
+}
+
+function setSelectValue(selectEl, desiredValue, fallbackValue) {
+    const values = Array.from(selectEl.options).map(opt => opt.value);
+    if (desiredValue && values.includes(desiredValue)) {
+        selectEl.value = desiredValue;
+        return;
+    }
+    if (fallbackValue && values.includes(fallbackValue)) {
+        selectEl.value = fallbackValue;
+        return;
+    }
+    if (selectEl.options.length > 0) {
+        selectEl.value = selectEl.options[0].value;
+    }
+}
+
+function populatePromptOptions(side) {
+    const promptEl = document.getElementById(`${side}-prompt-name`);
+    if (!promptEl) return;
+
+    const currentValue = promptEl.value;
+    promptEl.innerHTML = '';
+
+    const prompts = availablePrompts.length > 0
+        ? availablePrompts
+        : [{ name: defaultPromptName, display_name: defaultPromptName, description: '' }];
+
+    for (const prompt of prompts) {
+        const opt = document.createElement('option');
+        opt.value = prompt.name;
+        opt.textContent = prompt.display_name || prompt.name;
+        if (prompt.description) {
+            opt.title = prompt.description;
+        }
+        promptEl.appendChild(opt);
+    }
+
+    setSelectValue(promptEl, currentValue, defaultPromptName);
 }
 
 // --- Initialization ---
@@ -53,7 +94,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('fen-input').value = DEFAULT_FEN;
 
-    // Load presets from server and populate dropdowns
+    // Load prompts and presets from server
+    await loadPrompts();
     await loadPresets();
 
     updateUI();
@@ -120,7 +162,7 @@ async function loadPresets() {
             const typeSel = document.getElementById(`${side}-type`);
             for (const p of presets) {
                 presetConfigs[p.name] = {
-                    prompt_lang: p.prompt_lang || 'zh',
+                    prompt_name: p.prompt_name || defaultPromptName,
                     enable_thinking: p.enable_thinking !== false,
                 };
                 const opt = document.createElement('option');
@@ -141,6 +183,22 @@ async function loadPresets() {
             opt.textContent = 'Custom LLM (自定义)';
             typeSel.appendChild(opt);
         }
+    }
+}
+
+async function loadPrompts() {
+    try {
+        const resp = await fetch('/api/prompts');
+        const data = await resp.json();
+        availablePrompts = data.prompts || [];
+        defaultPromptName = data.default_prompt_name || availablePrompts[0]?.name || 'zh';
+    } catch (e) {
+        availablePrompts = [];
+        defaultPromptName = 'zh';
+    }
+
+    for (const side of ['red', 'black']) {
+        populatePromptOptions(side);
     }
 }
 
@@ -174,7 +232,7 @@ function getConfigs() {
         const typeVal = document.getElementById(`${side}-type`).value;
         const llmOptions = {
             enable_thinking: document.getElementById(`${side}-thinking-mode`).value === 'true',
-            prompt_lang: document.getElementById(`${side}-prompt-lang`).value,
+            prompt_name: document.getElementById(`${side}-prompt-name`).value,
         };
         if (typeVal === 'human' || typeVal === 'random') {
             result[side] = { type: typeVal };
