@@ -1,0 +1,28 @@
+# BattleChess 模型配置文件
+# 复制此文件为 config.yaml 并填入你的 API 信息
+# config.yaml 已被 .gitignore 忽略，不会被提交到仓库
+
+models:
+  # 示例：OpenAI GPT-4o
+  # - name: gpt-4o
+  #   api_base: https://api.openai.com/v1
+  #   api_key: sk-xxxxxxxxxxxxxxxx
+  #   model: gpt-4o
+  #   prompt_lang: zh
+  #   enable_thinking: true
+
+  # 示例：DeepSeek
+  # - name: deepseek-chat
+  #   api_base: https://api.deepseek.com/v1
+  #   api_key: sk-xxxxxxxxxxxxxxxx
+  #   model: deepseek-chat
+  #   prompt_lang: zh
+  #   enable_thinking: true
+
+  # 示例：本地 Ollama
+  # - name: local-qwen
+  #   api_base: http://localhost:11434/v1
+  #   api_key: ollama
+  #   model: qwen2.5:7b
+  #   prompt_lang: zh
+  #   enable_thinking: true

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BattleChess - Xiangqi Arena</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header id="header">
+        <div>
+            <h1>BattleChess</h1>
+            <span class="subtitle">Xiangqi Arena</span>
+        </div>
+        <div id="status-bar">Ready</div>
+    </header>
+
+    <main id="main-area">
+        <!-- Left: Board + Controls -->
+        <div id="board-column">
+            <canvas id="board-canvas"></canvas>
+            <div id="turn-indicator">Ready to start</div>
+
+            <div id="board-controls">
+                <div class="fen-row">
+                    <input type="text" id="fen-input" placeholder="FEN string...">
+                    <button class="btn-small" id="btn-load-fen">Load</button>
+                    <button class="btn-small btn-init" id="btn-init-fen">Init</button>
+                </div>
+                <div class="control-buttons">
+                    <button class="btn-primary" id="btn-start">Start</button>
+                    <button class="btn-secondary" id="btn-pause" disabled>Pause</button>
+                    <button class="btn-secondary" id="btn-step-back" disabled title="Step Back">&#9664;&#9664;</button>
+                    <button class="btn-secondary" id="btn-step-forward" disabled title="Step Forward">&#9654;&#9654;</button>
+                    <button class="btn-danger" id="btn-reset" disabled>Reset</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Tabbed Panel -->
+        <div id="right-column">
+            <div class="tab-bar">
+                <button class="tab-btn active" data-tab="log">记录</button>
+                <button class="tab-btn" data-tab="settings">设置</button>
+            </div>
+
+            <!-- Log Tab -->
+            <div class="tab-content active" id="tab-log">
+                <div id="game-log"></div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div class="tab-content" id="tab-settings">
+                <div class="config-side red">
+                    <h3><span class="dot red-dot"></span> Red (红方)</h3>
+                    <div class="field">
+                        <label>Player Type</label>
+                        <select id="red-type">
+                            <option value="human">Human (人类)</option>
+                            <option value="random">Random (随机)</option>
+                        </select>
+                    </div>
+                    <div class="llm-fields" id="red-llm-fields" style="display:none">
+                        <div class="field">
+                            <label>Thinking Mode</label>
+                            <select id="red-thinking-mode">
+                                <option value="true" selected>On</option>
+                                <option value="false">Off</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>Prompt Language</label>
+                            <select id="red-prompt-lang">
+                                <option value="zh" selected>中文</option>
+                                <option value="en">English</option>
+                            </select>
+                        </div>
+                        <div class="custom-llm-fields" id="red-custom-fields" style="display:none">
+                            <div class="field">
+                                <label>API Base URL</label>
+                                <input type="text" id="red-api-base" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
+                            </div>
+                            <div class="field">
+                                <label>API Key</label>
+                                <input type="password" id="red-api-key" placeholder="sk-...">
+                            </div>
+                            <div class="field">
+                                <label>Model</label>
+                                <input type="text" id="red-model" placeholder="gpt-4o" value="gpt-4o">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-side black">
+                    <h3><span class="dot black-dot"></span> Black (黑方)</h3>
+                    <div class="field">
+                        <label>Player Type</label>
+                        <select id="black-type">
+                            <option value="human">Human (人类)</option>
+                            <option value="random" selected>Random (随机)</option>
+                        </select>
+                    </div>
+                    <div class="llm-fields" id="black-llm-fields" style="display:none">
+                        <div class="field">
+                            <label>Thinking Mode</label>
+                            <select id="black-thinking-mode">
+                                <option value="true" selected>On</option>
+                                <option value="false">Off</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>Prompt Language</label>
+                            <select id="black-prompt-lang">
+                                <option value="zh" selected>中文</option>
+                                <option value="en">English</option>
+                            </select>
+                        </div>
+                        <div class="custom-llm-fields" id="black-custom-fields" style="display:none">
+                            <div class="field">
+                                <label>API Base URL</label>
+                                <input type="text" id="black-api-base" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
+                            </div>
+                            <div class="field">
+                                <label>API Key</label>
+                                <input type="password" id="black-api-key" placeholder="sk-...">
+                            </div>
+                            <div class="field">
+                                <label>Model</label>
+                                <input type="text" id="black-model" placeholder="gpt-4o" value="gpt-4o">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Game Over Banner -->
+    <div id="game-over-banner" class="game-over-banner hidden" onclick="hideGameOver()">
+        <div class="banner-content">
+            <h2>Game Over</h2>
+            <p class="reason"></p>
+            <button class="btn-secondary" onclick="hideGameOver()">Close</button>
+        </div>
+    </div>
+
+    <script src="/static/board.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
