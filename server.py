@@ -226,6 +226,10 @@ class HumanMoveRequest(BaseModel):
     move: str
 
 
+class SeekGameRequest(BaseModel):
+    ply: int
+
+
 class GameSession:
     def __init__(self, game_id: str, fen: str, red: PlayerConfig, black: PlayerConfig):
         self.id = game_id
@@ -276,7 +280,7 @@ async def _game_loop_inner(game: GameSession):
     game.status = "playing"
     game.broadcast("status", {"status": "playing"})
 
-    move_number = 0
+    move_number = len(game.move_history)
 
     while game.status == "playing":
         await game.pause_event.wait()
@@ -552,6 +556,13 @@ async def pause_game(game_id: str):
         raise HTTPException(400, "Game is not playing")
     game.pause_event.clear()
     game.status = "paused"
+    if game.task and not game.task.done():
+        game.task.cancel()
+        try:
+            await game.task
+        except asyncio.CancelledError:
+            pass
+    game.task = None
     game.broadcast("status", {"status": "paused"})
     return {"status": "paused"}
 
@@ -565,8 +576,48 @@ async def resume_game(game_id: str):
         raise HTTPException(400, "Game is not paused")
     game.status = "playing"
     game.pause_event.set()
-    game.broadcast("status", {"status": "playing"})
+    if not game.task or game.task.done():
+        game.task = asyncio.create_task(game_loop(game))
     return {"status": "resumed"}
+
+
+@app.post("/api/game/{game_id}/seek")
+async def seek_game(game_id: str, req: SeekGameRequest):
+    game = games.get(game_id)
+    if not game:
+        raise HTTPException(404, "Game not found")
+    if game.status != "paused":
+        raise HTTPException(400, "Game must be paused before seeking")
+
+    target_ply = req.ply
+    if target_ply < 0 or target_ply > len(game.move_history):
+        raise HTTPException(400, f"Invalid ply: {target_ply}")
+
+    board = Board(game.initial_fen)
+    kept_history = [dict(m) for m in game.move_history[:target_ply]]
+    for move_record in kept_history:
+        try:
+            board.make_move(move_record["move"])
+        except ValueError as e:
+            raise HTTPException(500, f"Failed to replay move history: {e}")
+
+    game.board = board
+    game.move_history = kept_history
+    game.winner = None
+    game.reason = None
+    game.events = []
+    game.human_move = None
+    game.human_move_event = asyncio.Event()
+
+    response = {
+        "status": "seeked",
+        "ply": target_ply,
+        "fen": game.board.to_fen(),
+        "turn": "red" if game.board.turn == 'w' else "black",
+        "move_history": game.move_history,
+    }
+    game.broadcast("seek", response)
+    return response
 
 
 @app.post("/api/game/{game_id}/reset")

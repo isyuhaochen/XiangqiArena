@@ -90,11 +90,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-reset').addEventListener('click', onReset);
     document.getElementById('btn-step-back').addEventListener('click', onStepBack);
     document.getElementById('btn-step-forward').addEventListener('click', onStepForward);
-    document.getElementById('btn-init-fen').addEventListener('click', () => {
-        document.getElementById('fen-input').value = DEFAULT_FEN;
-        state.fen = DEFAULT_FEN;
-        renderer.render(state.fen);
-    });
+    document.getElementById('btn-init-fen').addEventListener('click', onInitFEN);
     document.getElementById('btn-load-fen').addEventListener('click', onLoadFEN);
 
     // Board click-to-move callbacks
@@ -237,6 +233,8 @@ async function onStart() {
         renderer.clearSelection();
         renderer.render(state.fen);
         switchTab('log');
+        updateUI();
+        updateHumanInteractive();
 
         connectSSE(game_id);
 
@@ -250,6 +248,48 @@ async function onStart() {
     }
 }
 
+function closeGameStream() {
+    if (!state.eventSource) return;
+    state.eventSource.close();
+    state.eventSource = null;
+}
+
+function enterReadyState(fen, statusMessage = 'Ready') {
+    closeGameStream();
+    state.gameId = null;
+    state.status = 'waiting';
+    state.moveHistory = [];
+    state.lastMove = null;
+    state.viewIndex = -1;
+    state.fen = fen;
+    state.turn = fen.split(' ')[1] || 'w';
+
+    clearGameLog();
+    renderer.clearSelection();
+    renderer.humanInteractive = false;
+    renderer.render(state.fen);
+    hideGameOver();
+    setStatus(statusMessage);
+    updateUI();
+}
+
+function applySeekState(data, statusMessage = null) {
+    state.fen = data.fen;
+    state.turn = (data.turn === 'black' ? 'b' : 'w');
+    state.moveHistory = data.move_history || [];
+    state.lastMove = state.moveHistory.length > 0 ? state.moveHistory[state.moveHistory.length - 1].move : null;
+    state.viewIndex = -1;
+
+    clearGameLog();
+    renderer.clearSelection();
+    renderer.render(state.fen, state.lastMove);
+    if (statusMessage) {
+        setStatus(statusMessage);
+    }
+    updateUI();
+    updateHumanInteractive();
+}
+
 async function onPause() {
     if (!state.gameId) return;
     try {
@@ -257,6 +297,10 @@ async function onPause() {
             await apiPost(`/api/game/${state.gameId}/pause`);
             state.status = 'paused';
         } else if (state.status === 'paused') {
+            if (state.viewIndex !== -1) {
+                const seekResult = await apiPost(`/api/game/${state.gameId}/seek`, { ply: state.viewIndex });
+                applySeekState(seekResult, `Resuming from move #${seekResult.ply}`);
+            }
             await apiPost(`/api/game/${state.gameId}/resume`);
             state.status = 'playing';
         }
@@ -268,38 +312,27 @@ async function onPause() {
 }
 
 async function onReset() {
-    if (state.eventSource) {
-        state.eventSource.close();
-        state.eventSource = null;
-    }
+    closeGameStream();
     if (state.gameId) {
         try { await apiPost(`/api/game/${state.gameId}/reset`); } catch (_) {}
     }
-    state.gameId = null;
-    state.status = 'waiting';
-    state.moveHistory = [];
-    state.lastMove = null;
-    state.viewIndex = -1;
-    state.fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
-    state.turn = state.fen.split(' ')[1] || 'w';
+    enterReadyState(document.getElementById('fen-input').value.trim() || DEFAULT_FEN, 'Ready');
+}
 
-    clearGameLog();
-    renderer.clearSelection();
-    renderer.humanInteractive = false;
-    renderer.render(state.fen);
-    setStatus('Ready');
-    updateUI();
-    hideGameOver();
+function onInitFEN() {
+    if (state.status === 'playing' || state.status === 'paused') return;
+
+    document.getElementById('fen-input').value = DEFAULT_FEN;
+    enterReadyState(DEFAULT_FEN, 'Initial position loaded');
 }
 
 function onLoadFEN() {
+    if (state.status === 'playing' || state.status === 'paused') return;
+
     const fen = document.getElementById('fen-input').value.trim();
     if (!fen) return;
     try {
-        state.fen = fen;
-        state.turn = fen.split(' ')[1] || 'w';
-        renderer.render(fen);
-        setStatus('FEN loaded');
+        enterReadyState(fen, 'FEN loaded');
     } catch (e) {
         alert('Invalid FEN');
     }
@@ -337,7 +370,7 @@ function showViewIndex() {
         const initialFen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
         renderer.render(initialFen);
     } else {
-        const entry = state.moveHistory[state.viewIndex];
+        const entry = state.moveHistory[state.viewIndex - 1];
         renderer.render(entry.fen, entry.move);
     }
 }
@@ -452,6 +485,11 @@ function connectSSE(gameId) {
         es.close();
     });
 
+    es.addEventListener('seek', (e) => {
+        const data = JSON.parse(e.data);
+        applySeekState(data);
+    });
+
     es.addEventListener('status', (e) => {
         const data = JSON.parse(e.data);
         if (data.status === 'paused') {
@@ -485,11 +523,15 @@ function updateUI() {
     const isPlaying = state.status === 'playing';
     const isPaused = state.status === 'paused';
     const isWaiting = state.status === 'waiting';
+    const isGameActive = isPlaying || isPaused;
 
     document.getElementById('btn-start').disabled = !isWaiting;
     document.getElementById('btn-pause').disabled = !isPlaying && !isPaused;
     document.getElementById('btn-pause').textContent = isPaused ? 'Resume' : 'Pause';
     document.getElementById('btn-reset').disabled = isWaiting;
+    document.getElementById('fen-input').disabled = isGameActive;
+    document.getElementById('btn-load-fen').disabled = isGameActive;
+    document.getElementById('btn-init-fen').disabled = isGameActive;
 
     // Step back/forward: enabled when there's history
     document.getElementById('btn-step-back').disabled = state.moveHistory.length === 0 || (state.viewIndex === 0);
@@ -510,7 +552,9 @@ function updateTurnIndicator() {
     el.className = side;
 
     if (state.viewIndex !== -1) {
-        el.innerHTML = `Viewing move #${state.viewIndex + 1} / ${state.moveHistory.length}`;
+        el.innerHTML = state.viewIndex === 0
+            ? 'Viewing initial position'
+            : `Viewing after move #${state.viewIndex} / ${state.moveHistory.length}`;
     } else if (state.status === 'finished') {
         el.innerHTML = `Game Over`;
     } else if (state.status === 'waiting') {

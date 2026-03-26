@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="BattleChess logo" width="220">
+</p>
+
 # BattleChess - Xiangqi Arena
 
 一个用于中国象棋对战的本地 Arena，支持人类、随机策略和 LLM 之间的任意两两对战。
@@ -145,6 +149,22 @@ XiangqiArena/
 - 需要模型支持 Function Calling / Tool Use
 - 当前走子提交工具为 `make_move`
 - 如果是 OpenAI 兼容接口，只要 `base_url` 行为兼容，一般都可以接入
+
+## Citation
+
+If you use this project in research or publications, please cite:
+
+```bibtex
+@misc{chen2025xiangqir1enhancingspatialstrategic,
+      title={Xiangqi-R1: Enhancing Spatial Strategic Reasoning in LLMs for Chinese Chess via Reinforcement Learning}, 
+      author={Yuhao Chen and Shuochen Liu and Yuanjie Lyu and Chao Zhang and Jiayao Shi and Tong Xu},
+      year={2025},
+      eprint={2507.12215},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2507.12215}, 
+}
+```
 
 ## License
 

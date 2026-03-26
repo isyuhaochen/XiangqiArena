@@ -36,10 +36,14 @@ class BoardRenderer {
         this.ctx = canvas.getContext('2d');
         this.cellSize = cellSize;
         this.margin = margin;
+        this.leftPad = margin + 14;
+        this.rightPad = margin - 14;
+        this.topPad = margin - 12;
+        this.bottomPad = margin + 12;
         this.pieceRadius = cellSize * 0.42;
 
-        const w = margin * 2 + cellSize * 8;
-        const h = margin * 2 + cellSize * 9;
+        const w = this.leftPad + this.rightPad + cellSize * 8;
+        const h = this.topPad + this.bottomPad + cellSize * 9;
 
         const dpr = window.devicePixelRatio || 1;
         canvas.width = w * dpr;
@@ -65,15 +69,15 @@ class BoardRenderer {
     /** Convert board coords (col 0-8, row 0-9) to pixel coords. Row 0 = bottom (red). */
     toPixel(col, row) {
         return {
-            x: this.margin + col * this.cellSize,
-            y: this.margin + (9 - row) * this.cellSize,
+            x: this.leftPad + col * this.cellSize,
+            y: this.topPad + (9 - row) * this.cellSize,
         };
     }
 
     /** Convert pixel coords to board coords. Returns {col, row} or null. */
     fromPixel(px, py) {
-        const col = Math.round((px - this.margin) / this.cellSize);
-        const row = 9 - Math.round((py - this.margin) / this.cellSize);
+        const col = Math.round((px - this.leftPad) / this.cellSize);
+        const row = 9 - Math.round((py - this.topPad) / this.cellSize);
         if (col >= 0 && col <= 8 && row >= 0 && row <= 9) {
             return { col, row };
         }
@@ -228,10 +232,6 @@ class BoardRenderer {
         grad.addColorStop(1, '#ecd49c');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, this.width, this.height);
-        ctx.strokeStyle = '#a08050';
-        ctx.lineWidth = 2;
-        const m = this.margin - 8;
-        ctx.strokeRect(m, m, this.width - m * 2, this.height - m * 2);
     }
 
     drawGrid() {
@@ -310,20 +310,23 @@ class BoardRenderer {
 
     drawCoordinates() {
         const ctx = this.ctx;
-        ctx.font = `${this.cellSize * 0.22}px "Consolas", monospace`;
-        ctx.fillStyle = BOARD_COLORS.coordText;
+        ctx.font = `700 ${this.cellSize * 0.28}px "Consolas", monospace`;
+        ctx.fillStyle = '#000000';
+        const edgePadding = 6;
+
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.textBaseline = 'bottom';
         for (let col = 0; col <= 8; col++) {
             const label = String.fromCharCode(97 + col);
             const { x } = this.toPixel(col, 0);
-            ctx.fillText(label, x, this.height - this.margin / 2 + 4);
-            ctx.fillText(label, x, this.margin / 2 - 4);
+            ctx.fillText(label, x, this.height - edgePadding);
         }
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
         for (let row = 0; row <= 9; row++) {
             const { y } = this.toPixel(0, row);
-            ctx.fillText(row.toString(), this.margin / 2 - 6, y);
-            ctx.fillText(row.toString(), this.width - this.margin / 2 + 6, y);
+            ctx.fillText(row.toString(), edgePadding, y);
         }
     }
 
