@@ -55,6 +55,7 @@ def load_model_presets() -> list[dict]:
                     "model": m.get("model", m["name"]),
                     "prompt_lang": m.get("prompt_lang", "zh"),
                     "enable_thinking": m.get("enable_thinking", True),
+                    "max_completion_tokens": m.get("max_completion_tokens", m.get("max_output_tokens", 8192)),
                 })
         return result
     except Exception:
@@ -133,6 +134,39 @@ def _append_event_log(lines: list[str], events: list[dict]):
             lines.append(f"  [system] game_over: winner={event.get('winner')} reason={event.get('reason')}")
 
 
+def _mask_secret(secret: Optional[str]) -> Optional[str]:
+    if not secret:
+        return None
+    if len(secret) <= 8:
+        return "*" * len(secret)
+    return f"{secret[:4]}...{secret[-4:]}"
+
+
+def _player_config_summary(config) -> dict:
+    summary = {
+        "type": config.type,
+    }
+    if config.type == "llm":
+        summary.update({
+            "preset": config.preset,
+            "api_base": config.api_base,
+            "model": config.model,
+            "prompt_lang": config.prompt_lang,
+            "enable_thinking": config.enable_thinking,
+            "max_completion_tokens": _resolved_max_completion_tokens(config),
+            "api_key_masked": _mask_secret(config.api_key),
+        })
+    return {k: v for k, v in summary.items() if v is not None}
+
+
+def _append_player_configs(lines: list[str], game):
+    lines.append("Player Configs:")
+    red_config_text = json.dumps(_player_config_summary(game.red_config), ensure_ascii=False, indent=2)
+    black_config_text = json.dumps(_player_config_summary(game.black_config), ensure_ascii=False, indent=2)
+    _append_indented_block(lines, "  Red Config:", red_config_text)
+    _append_indented_block(lines, "  Black Config:", black_config_text)
+
+
 def write_game_log(game):
     """Write one game record per file under logs/."""
     from datetime import datetime
@@ -148,6 +182,7 @@ def write_game_log(game):
     lines.append(f"{'='*60}")
     lines.append(f"Game: {game.id} | {ts}")
     lines.append(f"Red: {red_label}  vs  Black: {black_label}")
+    _append_player_configs(lines, game)
     lines.append(f"Initial FEN: {game.initial_fen}")
     lines.append(f"Result: {game.winner} wins - {game.reason}")
     lines.append(f"Moves ({len(game.move_history)}):")
@@ -173,6 +208,12 @@ class PlayerConfig(BaseModel):
     model: Optional[str] = None
     prompt_lang: str = "zh"  # en | zh
     enable_thinking: Optional[bool] = None
+    max_completion_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+
+
+def _resolved_max_completion_tokens(config: PlayerConfig) -> int:
+    return config.max_completion_tokens or config.max_output_tokens or 8192
 
 
 class CreateGameRequest(BaseModel):
@@ -315,6 +356,7 @@ async def _game_loop_inner(game: GameSession):
                     model=config.model,
                     prompt_lang=config.prompt_lang or "zh",
                     enable_thinking=True if config.enable_thinking is None else config.enable_thinking,
+                    max_completion_tokens=_resolved_max_completion_tokens(config),
                 )
 
                 async for event in player.request_move(game.board, side):
@@ -418,6 +460,7 @@ async def get_presets():
                 "name": p["name"],
                 "prompt_lang": p.get("prompt_lang", "zh"),
                 "enable_thinking": p.get("enable_thinking", True),
+                "max_completion_tokens": p.get("max_completion_tokens", 8192),
             }
             for p in presets
         ]
@@ -442,6 +485,12 @@ def resolve_preset(config: PlayerConfig) -> PlayerConfig:
                     config.enable_thinking
                     if config.enable_thinking is not None
                     else p.get("enable_thinking", True)
+                ),
+                max_completion_tokens=(
+                    config.max_completion_tokens
+                    or config.max_output_tokens
+                    or p.get("max_completion_tokens")
+                    or p.get("max_output_tokens", 8192)
                 ),
             )
     raise HTTPException(400, f"Preset '{config.preset}' not found in config.yaml")

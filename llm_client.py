@@ -37,7 +37,7 @@ SYSTEM_PROMPT_TEMPLATE = """You are a Chinese Chess (Xiangqi) master playing as 
 Current position (FEN): {fen}
 Opponent's previous move: {last_opponent_move}
 
-PIECE POSITIONS:
+ACCURATE PIECE POSITIONS (authoritative; use these as the ground truth):
 {piece_positions}
 
 PIECE NOTATION:
@@ -60,7 +60,7 @@ SYSTEM_PROMPT_TEMPLATE_ZH = """你是一位中国象棋大师，执{side_name_zh
 当前局面（FEN）：{fen}
 对手上一手：{last_opponent_move}
 
-棋子位置：
+准确棋子位置（以此为准）：
 {piece_positions}
 
 棋子记号说明：
@@ -181,6 +181,7 @@ class LLMPlayer:
         max_tool_rounds: int = 10,
         prompt_lang: str = "zh",
         enable_thinking: bool = True,
+        max_completion_tokens: int = 8192,
     ):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
@@ -189,6 +190,7 @@ class LLMPlayer:
         self.max_tool_rounds = max_tool_rounds
         self.prompt_lang = prompt_lang
         self.enable_thinking = enable_thinking
+        self.max_completion_tokens = max_completion_tokens
 
     async def _call_api_stream(self, messages: list, use_tools: bool = True):
         """
@@ -203,6 +205,7 @@ class LLMPlayer:
             "model": self.model,
             "messages": messages,
             "stream": True,
+            "max_completion_tokens": self.max_completion_tokens,
         }
         if use_tools:
             request_args["tools"] = TOOL_DEFINITIONS

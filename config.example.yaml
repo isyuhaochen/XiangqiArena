@@ -10,6 +10,7 @@ models:
   #   model: gpt-4o
   #   prompt_lang: zh
   #   enable_thinking: true
+  #   max_completion_tokens: 8192
 
   # 示例：DeepSeek
   # - name: deepseek-chat
@@ -18,6 +19,7 @@ models:
   #   model: deepseek-chat
   #   prompt_lang: zh
   #   enable_thinking: true
+  #   max_completion_tokens: 8192
 
   # 示例：本地 Ollama
   # - name: local-qwen
@@ -26,3 +28,4 @@ models:
   #   model: qwen2.5:7b
   #   prompt_lang: zh
   #   enable_thinking: true
+  #   max_completion_tokens: 8192
