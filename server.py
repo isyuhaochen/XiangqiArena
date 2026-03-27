@@ -108,6 +108,20 @@ def _append_indented_block(lines: list[str], header: str, content: str):
         lines.append(f"    {part}")
 
 
+def _format_move_text(move_data: dict) -> str:
+    move = move_data.get("move", "")
+    move_zh = move_data.get("move_zh")
+    return f"{move} ({move_zh})" if move_zh else move
+
+
+def _format_result_text(game) -> str:
+    if game.winner == "draw":
+        return game.reason or "draw"
+    if game.winner:
+        return f"{game.winner} wins - {game.reason}"
+    return game.reason or "unfinished"
+
+
 def _merged_stream_events(events: list[dict]) -> list[dict]:
     merged = []
     for event in events:
@@ -154,7 +168,7 @@ def _append_event_log(lines: list[str], events: list[dict]):
             _append_indented_block(lines, f"  [{side}] tool_result: {event.get('tool', '')}", event.get("result", ""))
         elif event_type == "move":
             captured = f" x{event['captured']}" if event.get("captured") else ""
-            lines.append(f"  [{side}] move: #{event.get('number')} {event.get('move', '')}{captured}")
+            lines.append(f"  [{side}] move: #{event.get('number')} {_format_move_text(event)}{captured}")
         elif event_type == "game_over":
             lines.append(f"  [system] game_over: winner={event.get('winner')} reason={event.get('reason')}")
 
@@ -209,11 +223,11 @@ def write_game_log(game):
     lines.append(f"Red: {red_label}  vs  Black: {black_label}")
     _append_player_configs(lines, game)
     lines.append(f"Initial FEN: {game.initial_fen}")
-    lines.append(f"Result: {game.winner} wins - {game.reason}")
+    lines.append(f"Result: {_format_result_text(game)}")
     lines.append(f"Moves ({len(game.move_history)}):")
     for m in game.move_history:
         captured = f" x{m['captured']}" if m.get('captured') else ""
-        lines.append(f"  #{m['number']} {m['side']}: {m['move']}{captured}")
+        lines.append(f"  #{m['number']} {m['side']}: {_format_move_text(m)}{captured}")
     lines.append(f"Final FEN: {game.board.to_fen()}")
     lines.append("")
     _append_event_log(lines, game.events)
@@ -313,6 +327,26 @@ class GameSession:
 games: dict[str, GameSession] = {}
 
 
+def _build_move_record(move_number: int, side_name: str, result: dict) -> dict:
+    return {
+        "number": move_number,
+        "side": side_name,
+        "move": result["move"],
+        "move_zh": result.get("move_zh"),
+        "piece": result["piece"],
+        "captured": result["captured"],
+        "fen": result["fen_after"],
+        "timestamp": time.time(),
+    }
+
+
+def _finish_game(game: GameSession, winner: str, reason: str):
+    game.status = "finished"
+    game.winner = winner
+    game.reason = reason
+    game.broadcast("game_over", {"winner": winner, "reason": reason})
+
+
 # --- Pikafish evaluation helper ---
 
 async def _pikafish_evaluate(game: GameSession, fen: str, move_number: int):
@@ -388,15 +422,7 @@ async def _game_loop_inner(game: GameSession):
                 if move_iccs:
                     result = game.board.make_move(move_iccs)
                     move_number += 1
-                    move_record = {
-                        "number": move_number,
-                        "side": side_name,
-                        "move": move_iccs,
-                        "piece": result["piece"],
-                        "captured": result["captured"],
-                        "fen": result["fen_after"],
-                        "timestamp": time.time(),
-                    }
+                    move_record = _build_move_record(move_number, side_name, result)
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
                     if game.pikafish:
@@ -412,15 +438,7 @@ async def _game_loop_inner(game: GameSession):
                     game.broadcast("thinking", {"side": side_name, "content": f"Random move: {move_iccs}"})
                     result = game.board.make_move(move_iccs)
                     move_number += 1
-                    move_record = {
-                        "number": move_number,
-                        "side": side_name,
-                        "move": move_iccs,
-                        "piece": result["piece"],
-                        "captured": result["captured"],
-                        "fen": result["fen_after"],
-                        "timestamp": time.time(),
-                    }
+                    move_record = _build_move_record(move_number, side_name, result)
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
                     if game.pikafish:
@@ -462,54 +480,31 @@ async def _game_loop_inner(game: GameSession):
                         try:
                             result = game.board.make_move(move_iccs)
                             move_number += 1
-                            move_record = {
-                                "number": move_number,
-                                "side": side_name,
-                                "move": move_iccs,
-                                "piece": result["piece"],
-                                "captured": result["captured"],
-                                "fen": result["fen_after"],
-                                "timestamp": time.time(),
-                            }
+                            move_record = _build_move_record(move_number, side_name, result)
                             game.move_history.append(move_record)
                             game.broadcast("move", move_record)
                             if game.pikafish:
                                 asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
                             move_made = True
                         except ValueError as e:
-                            game.status = "finished"
-                            game.winner = "black" if side == 'w' else "red"
-                            game.reason = f"Invalid move by {side_name}: {e}"
-                            game.broadcast("game_over", {"winner": game.winner, "reason": game.reason})
+                            _finish_game(game, "black" if side == 'w' else "red", f"Invalid move by {side_name}: {e}")
                             return
                     elif event["type"] == "error":
-                        game.status = "finished"
-                        game.winner = "black" if side == 'w' else "red"
-                        game.reason = f"{side_name} error: {event['message']}"
-                        game.broadcast("game_over", {"winner": game.winner, "reason": game.reason})
+                        _finish_game(game, "black" if side == 'w' else "red", f"{side_name} error: {event['message']}")
                         return
 
         except Exception as e:
-            game.status = "finished"
-            game.winner = "black" if side == 'w' else "red"
-            game.reason = f"{side_name} exception: {str(e)[:200]}"
-            game.broadcast("game_over", {"winner": game.winner, "reason": game.reason})
+            _finish_game(game, "black" if side == 'w' else "red", f"{side_name} exception: {str(e)[:200]}")
             return
 
         if not move_made:
-            game.status = "finished"
-            game.winner = "black" if side == 'w' else "red"
-            game.reason = f"{side_name} failed to make a move"
-            game.broadcast("game_over", {"winner": game.winner, "reason": game.reason})
+            _finish_game(game, "black" if side == 'w' else "red", f"{side_name} failed to make a move")
             return
 
         # Check game over
-        is_over, reason = game.board.is_game_over()
+        is_over, winner, reason = game.board.is_game_over()
         if is_over:
-            game.status = "finished"
-            game.winner = "red" if "red" in reason else "black"
-            game.reason = reason
-            game.broadcast("game_over", {"winner": game.winner, "reason": game.reason})
+            _finish_game(game, winner, reason)
             return
 
         await asyncio.sleep(0.3)

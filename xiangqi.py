@@ -24,6 +24,12 @@ def coords_to_iccs(cf, rf, ct, rt):
 # Piece characters
 RED_PIECES = set('KABNRCP')
 BLACK_PIECES = set('kabnrcp')
+RED_DIGITS = "零一二三四五六七八九"
+BLACK_DIGITS = "0123456789"
+POSITION_PREFIXES = {
+    2: ["前", "后"],
+    3: ["前", "中", "后"],
+}
 
 PIECE_NAMES_ZH = {
     'K': '帅', 'A': '仕', 'B': '相', 'N': '马', 'R': '车', 'C': '炮', 'P': '兵',
@@ -130,6 +136,77 @@ class Board:
         if piece is None:
             return None
         return 'w' if piece in RED_PIECES else 'b'
+
+    @staticmethod
+    def _side_numeral(side, value):
+        digits = RED_DIGITS if side == 'w' else BLACK_DIGITS
+        if 0 <= value < len(digits):
+            return digits[value]
+        return str(value)
+
+    @staticmethod
+    def _file_number_for_side(side, col):
+        return 9 - col if side == 'w' else col + 1
+
+    @staticmethod
+    def _is_forward_for_side(side, from_row, to_row):
+        return to_row > from_row if side == 'w' else to_row < from_row
+
+    def _same_piece_positions(self, piece):
+        positions = []
+        for row in range(10):
+            for col in range(9):
+                if self._grid[row][col] == piece:
+                    positions.append((col, row))
+        return positions
+
+    def _position_prefix(self, piece, positions, current_pos):
+        side = self.piece_color(piece)
+        ordered = sorted(positions, key=lambda pos: pos[1], reverse=(side == 'w'))
+        index = ordered.index(current_pos)
+        prefixes = POSITION_PREFIXES.get(len(ordered))
+        if prefixes:
+            return prefixes[index]
+        return self._side_numeral(side, index + 1)
+
+    def _move_prefix_zh(self, piece, col, row):
+        same_file_positions = [
+            pos for pos in self._same_piece_positions(piece)
+            if pos[0] == col
+        ]
+        piece_name = PIECE_NAMES_ZH[piece]
+        if len(same_file_positions) > 1:
+            return f"{self._position_prefix(piece, same_file_positions, (col, row))}{piece_name}"
+
+        side = self.piece_color(piece)
+        file_num = self._file_number_for_side(side, col)
+        return f"{piece_name}{self._side_numeral(side, file_num)}"
+
+    def to_chinese_move(self, move_iccs: str):
+        """Convert an ICCS move into Chinese notation."""
+        cf, rf, ct, rt = iccs_to_coords(move_iccs)
+        piece = self.get_piece(cf, rf)
+        if piece is None:
+            raise ValueError(f"No piece at source square for move: {move_iccs}")
+
+        side = self.piece_color(piece)
+        piece_type = piece.upper()
+        prefix = self._move_prefix_zh(piece, cf, rf)
+
+        if ct == cf:
+            action = "进" if self._is_forward_for_side(side, rf, rt) else "退"
+            if piece_type in {'A', 'B', 'N'}:
+                target = self._side_numeral(side, self._file_number_for_side(side, ct))
+            else:
+                target = self._side_numeral(side, abs(rt - rf))
+        elif rt == rf:
+            action = "平"
+            target = self._side_numeral(side, self._file_number_for_side(side, ct))
+        else:
+            action = "进" if self._is_forward_for_side(side, rf, rt) else "退"
+            target = self._side_numeral(side, self._file_number_for_side(side, ct))
+
+        return f"{prefix}{action}{target}"
 
     def _is_own(self, piece):
         """Check if piece belongs to the side to move."""
@@ -426,11 +503,13 @@ class Board:
         cf, rf, ct, rt = iccs_to_coords(move_iccs)
         piece = self._grid[rf][cf]
         captured = self._grid[rt][ct]
+        move_zh = self.to_chinese_move(move_iccs)
 
         fen_before = self.to_fen()
 
         self.move_history.append({
             'move': move_iccs,
+            'move_zh': move_zh,
             'piece': piece,
             'captured': captured,
             'from': (cf, rf),
@@ -444,6 +523,7 @@ class Board:
 
         return {
             'move': move_iccs,
+            'move_zh': move_zh,
             'piece': piece,
             'captured': captured,
             'fen_after': self.to_fen(),
@@ -475,24 +555,30 @@ class Board:
         return False
 
     def is_game_over(self):
-        """Check if game is over. Returns (is_over: bool, reason: str)."""
+        """Check if game is over. Returns (is_over, winner, reason)."""
         legal = self.get_legal_moves()
         if not legal:
             if self._is_in_check(self.turn):
                 winner = 'black' if self.turn == 'w' else 'red'
-                return True, f"checkmate - {winner} wins"
+                return True, winner, f"checkmate - {winner} wins"
             else:
                 # In Xiangqi, stalemate = the stalemated side loses
                 winner = 'black' if self.turn == 'w' else 'red'
-                return True, f"stalemate - {winner} wins"
+                return True, winner, f"stalemate - {winner} wins"
 
         # Check if a king is missing (captured - edge case)
         if self._find_king('w') is None:
-            return True, "black wins - red king captured"
+            return True, 'black', "black wins - red king captured"
         if self._find_king('b') is None:
-            return True, "red wins - black king captured"
+            return True, 'red', "red wins - black king captured"
 
-        return False, ""
+        # Draw by 30 full moves (60 plies) without any capture.
+        if len(self.move_history) >= 60:
+            recent_moves = self.move_history[-60:]
+            if all(move.get('captured') is None for move in recent_moves):
+                return True, 'draw', "draw - 30 full moves without capture"
+
+        return False, None, ""
 
     def copy(self):
         """Create a deep copy of the board."""

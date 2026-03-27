@@ -386,6 +386,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .game-over-banner .reason { color: var(--text-secondary); margin-bottom: 16px; }
 .game-over-banner.red h2 { color: var(--red-color); }
 .game-over-banner.black h2 { color: var(--black-color); }
+.game-over-banner.draw h2 { color: var(--accent); }
 .hidden { display: none !important; }
 
 /* Selection highlight on board */

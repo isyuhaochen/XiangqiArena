@@ -701,6 +701,11 @@ let _currentLogContent = null; // the content div inside current <details>
 let _currentStreamEl = null; // current streaming element
 let _currentStreamCls = null; // class of current streaming element
 
+function formatMoveLabel(moveData) {
+    const move = moveData.move || '';
+    return moveData.move_zh ? `${move}（${moveData.move_zh}）` : move;
+}
+
 function getGameLogEl() {
     return document.getElementById('game-log');
 }
@@ -790,7 +795,7 @@ function finalizeLogEntry(moveData) {
         const captured = moveData.captured ? ` x${moveData.captured}` : '';
         // Preserve existing eval badge if any
         const existingBadge = summary.querySelector('.eval-badge');
-        summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${moveData.move}${captured}`;
+        summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${formatMoveLabel(moveData)}${captured}`;
         if (existingBadge) summary.appendChild(existingBadge);
         // Collapse it
         _currentLogEntry.removeAttribute('open');
