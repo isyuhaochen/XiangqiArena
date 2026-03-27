@@ -1,7 +1,7 @@
 """
 FastAPI backend for BattleChess - LLM Xiangqi Arena.
 Manages game sessions, proxies LLM interactions, serves frontend.
-Supports human, random, and LLM player types.
+Supports human, random, LLM, and Pikafish player types.
 """
 
 import asyncio
@@ -24,7 +24,11 @@ from pydantic import BaseModel
 from xiangqi import Board
 from llm_client import LLMPlayer
 from prompt_registry import get_default_prompt_name, get_prompt_profile, list_prompt_profiles, resolve_prompt_name
-from pikafish_manager import PikafishEvaluator, DEFAULT_ENGINE_PATH
+from pikafish_manager import (
+    DEFAULT_ENGINE_FILENAME,
+    DEFAULT_ENGINE_PATH,
+    PikafishEvaluator,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -35,15 +39,24 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 # --- Config loading ---
 
-def load_model_presets() -> list[dict]:
-    """Load model presets from config.yaml."""
+def load_app_config() -> dict:
+    """Load config.yaml and return a normalized dict."""
     if not os.path.exists(CONFIG_PATH):
-        return []
+        return {}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if not data or "models" not in data:
-            return []
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_model_presets() -> list[dict]:
+    """Load model presets from config.yaml."""
+    data = load_app_config()
+    if "models" not in data:
+        return []
+    try:
         models = data["models"]
         if not isinstance(models, list):
             return []
@@ -64,6 +77,29 @@ def load_model_presets() -> list[dict]:
         return []
 
 
+def _normalize_engine_path(path: Optional[str], default_path: str = DEFAULT_ENGINE_PATH) -> str:
+    candidate = (path or "").strip() or default_path
+    candidate = os.path.expandvars(os.path.expanduser(candidate))
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(BASE_DIR, candidate)
+    candidate = os.path.normpath(candidate)
+    if os.path.isdir(candidate):
+        candidate = os.path.join(candidate, DEFAULT_ENGINE_FILENAME)
+    return os.path.normpath(candidate)
+
+
+def get_default_player_pikafish_path() -> str:
+    return _normalize_engine_path(DEFAULT_ENGINE_PATH)
+
+
+def get_default_eval_pikafish_path() -> str:
+    data = load_app_config()
+    pikafish_cfg = data.get("pikafish", {})
+    if not isinstance(pikafish_cfg, dict):
+        pikafish_cfg = {}
+    return _normalize_engine_path(pikafish_cfg.get("eval_engine_path"), DEFAULT_ENGINE_PATH)
+
+
 # --- Models ---
 
 def _player_label(config) -> str:
@@ -72,6 +108,9 @@ def _player_label(config) -> str:
         return "Human"
     elif config.type == "random":
         return "Random"
+    elif config.type == "pikafish":
+        engine_name = os.path.basename(_resolved_player_engine_path(config))
+        return f"Pikafish ({engine_name})"
     elif config.type == "llm":
         name = config.preset or config.model or "unknown"
         return f"LLM ({name})"
@@ -84,6 +123,9 @@ def _player_filename_label(config) -> str:
         return "Human"
     if config.type == "random":
         return "Random"
+    if config.type == "pikafish":
+        engine_name = os.path.splitext(os.path.basename(_resolved_player_engine_path(config)))[0]
+        return f"Pikafish-{engine_name}"
     if config.type == "llm":
         name = config.preset or config.model or "unknown"
         return f"LLM-{name}"
@@ -195,6 +237,13 @@ def _player_config_summary(config) -> dict:
             "max_completion_tokens": _resolved_max_completion_tokens(config),
             "api_key_masked": _mask_secret(config.api_key),
         })
+    elif config.type == "pikafish":
+        summary.update({
+            "engine_path": _resolved_player_engine_path(config),
+            "engine_mode": _resolved_player_engine_mode(config),
+            "engine_movetime": _resolved_player_engine_movetime(config),
+            "engine_depth": _resolved_player_engine_depth(config),
+        })
     return {k: v for k, v in summary.items() if v is not None}
 
 
@@ -240,7 +289,7 @@ def write_game_log(game):
 
 
 class PlayerConfig(BaseModel):
-    type: str = "human"  # human | random | llm
+    type: str = "human"  # human | random | llm | pikafish
     preset: Optional[str] = None
     api_base: Optional[str] = None
     api_key: Optional[str] = None
@@ -250,6 +299,10 @@ class PlayerConfig(BaseModel):
     enable_thinking: Optional[bool] = None
     max_completion_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    engine_path: Optional[str] = None
+    engine_mode: Optional[str] = None
+    engine_movetime: Optional[int] = None
+    engine_depth: Optional[int] = None
 
 
 def _resolved_max_completion_tokens(config: PlayerConfig) -> int:
@@ -258,6 +311,24 @@ def _resolved_max_completion_tokens(config: PlayerConfig) -> int:
 
 def _resolved_prompt_name(config: PlayerConfig) -> str:
     return resolve_prompt_name(config.prompt_name, config.prompt_lang)
+
+
+def _resolved_player_engine_path(config: PlayerConfig) -> str:
+    return _normalize_engine_path(config.engine_path, get_default_player_pikafish_path())
+
+
+def _resolved_player_engine_mode(config: PlayerConfig) -> str:
+    return config.engine_mode if config.engine_mode in {"movetime", "depth"} else "movetime"
+
+
+def _resolved_player_engine_movetime(config: PlayerConfig) -> int:
+    value = config.engine_movetime or 1000
+    return max(100, value)
+
+
+def _resolved_player_engine_depth(config: PlayerConfig) -> int:
+    value = config.engine_depth or 20
+    return max(1, value)
 
 
 def _validate_prompt_config(config: PlayerConfig):
@@ -271,6 +342,7 @@ def _validate_prompt_config(config: PlayerConfig):
 
 class PikafishConfig(BaseModel):
     enabled: bool = False
+    engine_path: Optional[str] = None
     mode: str = "movetime"    # "movetime" | "depth"
     movetime: int = 1000
     depth: int = 20
@@ -314,6 +386,7 @@ class GameSession:
         # Pikafish engine evaluator
         self.pikafish: Optional[PikafishEvaluator] = None
         self.pikafish_config: Optional[PikafishConfig] = None
+        self.player_engines: dict[str, PikafishEvaluator] = {}
 
     def broadcast(self, event_type: str, data: dict):
         event = {"type": event_type, **data}
@@ -360,6 +433,53 @@ async def _pikafish_evaluate(game: GameSession, fen: str, move_number: int):
         pass
 
 
+async def _shutdown_player_engines(game: GameSession):
+    for engine in game.player_engines.values():
+        try:
+            await engine.shutdown()
+        except Exception:
+            pass
+    game.player_engines.clear()
+
+
+async def _get_player_engine(game: GameSession, side_name: str, config: PlayerConfig) -> PikafishEvaluator:
+    engine = game.player_engines.get(side_name)
+    if engine:
+        return engine
+
+    engine = PikafishEvaluator(
+        engine_path=_resolved_player_engine_path(config),
+        movetime=_resolved_player_engine_movetime(config) if _resolved_player_engine_mode(config) == "movetime" else None,
+        depth=_resolved_player_engine_depth(config) if _resolved_player_engine_mode(config) == "depth" else None,
+        score_type="Raw",
+    )
+    await engine.start()
+    game.player_engines[side_name] = engine
+    return engine
+
+
+async def _start_eval_engine(game: GameSession):
+    if not game.pikafish_config or not game.pikafish_config.enabled or game.pikafish:
+        return
+    try:
+        cfg = game.pikafish_config
+        eval_engine_path = _resolved_eval_engine_path(cfg)
+        print(
+            f"  [Pikafish] Starting evaluator: engine={eval_engine_path}, "
+            f"mode={cfg.mode}, movetime={cfg.movetime}, depth={cfg.depth}, score_type={cfg.score_type}"
+        )
+        evaluator = PikafishEvaluator(
+            engine_path=eval_engine_path,
+            movetime=cfg.movetime if cfg.mode == "movetime" else None,
+            depth=cfg.depth if cfg.mode == "depth" else None,
+            score_type=cfg.score_type,
+        )
+        await evaluator.start()
+        game.pikafish = evaluator
+    except Exception:
+        pass
+
+
 # --- Game loop ---
 
 async def game_loop(game: GameSession):
@@ -378,6 +498,7 @@ async def game_loop(game: GameSession):
             except Exception:
                 pass
             game.pikafish = None
+        await _shutdown_player_engines(game)
 
 
 async def _game_loop_inner(game: GameSession):
@@ -493,6 +614,40 @@ async def _game_loop_inner(game: GameSession):
                         _finish_game(game, "black" if side == 'w' else "red", f"{side_name} error: {event['message']}")
                         return
 
+            elif config.type == "pikafish":
+                player_engine = await _get_player_engine(game, side_name, config)
+                mode = _resolved_player_engine_mode(config)
+                limit_text = (
+                    f"movetime={_resolved_player_engine_movetime(config)}ms"
+                    if mode == "movetime"
+                    else f"depth={_resolved_player_engine_depth(config)}"
+                )
+                game.broadcast(
+                    "thinking",
+                    {
+                        "side": side_name,
+                        "content": (
+                            f"Pikafish ({os.path.basename(_resolved_player_engine_path(config))}) "
+                            f"analyzing, {limit_text}"
+                        ),
+                    },
+                )
+
+                move_iccs = await player_engine.bestmove(game.board.to_fen())
+                if not move_iccs:
+                    _finish_game(game, "black" if side == 'w' else "red", f"{side_name} Pikafish failed to return a move")
+                    return
+
+                game.broadcast("thinking", {"side": side_name, "content": f"Pikafish move: {move_iccs}"})
+                result = game.board.make_move(move_iccs)
+                move_number += 1
+                move_record = _build_move_record(move_number, side_name, result)
+                game.move_history.append(move_record)
+                game.broadcast("move", move_record)
+                if game.pikafish:
+                    asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
+                move_made = True
+
         except Exception as e:
             _finish_game(game, "black" if side == 'w' else "red", f"{side_name} exception: {str(e)[:200]}")
             return
@@ -523,6 +678,7 @@ async def lifespan(app: FastAPI):
                 await g.pikafish.shutdown()
             except Exception:
                 pass
+        await _shutdown_player_engines(g)
 
 
 app = FastAPI(title="BattleChess", lifespan=lifespan)
@@ -543,7 +699,9 @@ async def get_presets():
                 "max_completion_tokens": p.get("max_completion_tokens", 8192),
             }
             for p in presets
-        ]
+        ],
+        "default_pikafish_path": get_default_player_pikafish_path(),
+        "default_eval_pikafish_path": get_default_eval_pikafish_path(),
     }
 
 
@@ -595,6 +753,35 @@ def resolve_preset(config: PlayerConfig) -> PlayerConfig:
     raise HTTPException(400, f"Preset '{config.preset}' not found in config.yaml")
 
 
+def _validate_player_type(config: PlayerConfig):
+    if config.type not in {"human", "random", "llm", "pikafish"}:
+        raise HTTPException(400, f"Unsupported player type: {config.type}")
+
+
+def _validate_pikafish_player_config(config: PlayerConfig):
+    if config.type != "pikafish":
+        return
+    if config.engine_mode and config.engine_mode not in {"movetime", "depth"}:
+        raise HTTPException(400, f"Invalid Pikafish player mode: {config.engine_mode}")
+    engine_path = _resolved_player_engine_path(config)
+    if not os.path.isfile(engine_path):
+        raise HTTPException(400, f"Pikafish player engine not found: {engine_path}")
+
+
+def _resolved_eval_engine_path(config: PikafishConfig) -> str:
+    return _normalize_engine_path(config.engine_path, get_default_eval_pikafish_path())
+
+
+def _validate_eval_pikafish_config(config: PikafishConfig):
+    if not config.enabled:
+        return
+    if config.mode not in {"movetime", "depth"}:
+        raise HTTPException(400, f"Invalid evaluation Pikafish mode: {config.mode}")
+    engine_path = _resolved_eval_engine_path(config)
+    if not os.path.isfile(engine_path):
+        raise HTTPException(400, f"Evaluation Pikafish engine not found: {engine_path}")
+
+
 @app.post("/api/game/create")
 async def create_game(req: CreateGameRequest):
     try:
@@ -605,8 +792,13 @@ async def create_game(req: CreateGameRequest):
 
     red = resolve_preset(req.red)
     black = resolve_preset(req.black)
+    _validate_player_type(red)
+    _validate_player_type(black)
     _validate_prompt_config(red)
     _validate_prompt_config(black)
+    _validate_pikafish_player_config(red)
+    _validate_pikafish_player_config(black)
+    _validate_eval_pikafish_config(req.pikafish)
 
     game_id = str(uuid.uuid4())[:8]
     game = GameSession(game_id, req.fen, red, black)
@@ -642,22 +834,7 @@ async def start_game(game_id: str):
         raise HTTPException(400, "Game already finished, create a new one")
 
     game.task = asyncio.create_task(game_loop(game))
-
-    # Start Pikafish evaluator if enabled
-    if game.pikafish_config and game.pikafish_config.enabled:
-        try:
-            cfg = game.pikafish_config
-            print(f"  [Pikafish] Starting engine: mode={cfg.mode}, movetime={cfg.movetime}, depth={cfg.depth}, score_type={cfg.score_type}")
-            evaluator = PikafishEvaluator(
-                engine_path=DEFAULT_ENGINE_PATH,
-                movetime=cfg.movetime if cfg.mode == "movetime" else None,
-                depth=cfg.depth if cfg.mode == "depth" else None,
-                score_type=cfg.score_type,
-            )
-            await evaluator.start()
-            game.pikafish = evaluator
-        except Exception:
-            pass  # Engine unavailable, continue without evaluation
+    await _start_eval_engine(game)
 
     return {"status": "started"}
 
@@ -671,6 +848,7 @@ async def pause_game(game_id: str):
         raise HTTPException(400, "Game is not playing")
     game.pause_event.clear()
     game.status = "paused"
+    await _shutdown_player_engines(game)
     if game.task and not game.task.done():
         game.task.cancel()
         try:
@@ -693,6 +871,7 @@ async def resume_game(game_id: str):
     game.pause_event.set()
     if not game.task or game.task.done():
         game.task = asyncio.create_task(game_loop(game))
+    await _start_eval_engine(game)
     return {"status": "resumed"}
 
 
@@ -755,6 +934,7 @@ async def reset_game(game_id: str):
         except Exception:
             pass
         game.pikafish = None
+    await _shutdown_player_engines(game)
     game.board = Board(game.initial_fen)
     game.status = "waiting"
     game.winner = None

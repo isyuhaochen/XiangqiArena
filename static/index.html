@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BattleChess - Xiangqi Arena</title>
-    <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-11">
-    <link rel="stylesheet" href="/static/style.css?v=20260327-11">
+    <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-12">
+    <link rel="stylesheet" href="/static/style.css?v=20260327-12">
 </head>
 <body>
     <header id="header">
@@ -66,6 +66,7 @@
                         <select id="red-type">
                             <option value="human">Human (人类)</option>
                             <option value="random">Random (随机)</option>
+                            <option value="pikafish">Pikafish</option>
                         </select>
                     </div>
                     <div class="llm-fields" id="red-llm-fields" style="display:none">
@@ -96,6 +97,27 @@
                             </div>
                         </div>
                     </div>
+                    <div class="engine-fields" id="red-pikafish-fields" style="display:none">
+                        <div class="field">
+                            <label>Pikafish Path</label>
+                            <input type="text" id="red-pikafish-path" placeholder="C:\path\to\pikafish-bmi2.exe">
+                        </div>
+                        <div class="field">
+                            <label>Mode</label>
+                            <select id="red-pikafish-mode">
+                                <option value="movetime" selected>Think Time (限时)</option>
+                                <option value="depth">Depth (深度)</option>
+                            </select>
+                        </div>
+                        <div class="field" id="red-pikafish-movetime-field">
+                            <label>Think Time (ms)</label>
+                            <input type="number" id="red-pikafish-movetime" value="1000" min="100" max="30000" step="100">
+                        </div>
+                        <div class="field" id="red-pikafish-depth-field" style="display:none">
+                            <label>Depth</label>
+                            <input type="number" id="red-pikafish-depth" value="20" min="1" max="40">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="config-side black">
@@ -105,6 +127,7 @@
                         <select id="black-type">
                             <option value="human">Human (人类)</option>
                             <option value="random" selected>Random (随机)</option>
+                            <option value="pikafish">Pikafish</option>
                         </select>
                     </div>
                     <div class="llm-fields" id="black-llm-fields" style="display:none">
@@ -135,6 +158,27 @@
                             </div>
                         </div>
                     </div>
+                    <div class="engine-fields" id="black-pikafish-fields" style="display:none">
+                        <div class="field">
+                            <label>Pikafish Path</label>
+                            <input type="text" id="black-pikafish-path" placeholder="C:\path\to\pikafish-bmi2.exe">
+                        </div>
+                        <div class="field">
+                            <label>Mode</label>
+                            <select id="black-pikafish-mode">
+                                <option value="movetime" selected>Think Time (限时)</option>
+                                <option value="depth">Depth (深度)</option>
+                            </select>
+                        </div>
+                        <div class="field" id="black-pikafish-movetime-field">
+                            <label>Think Time (ms)</label>
+                            <input type="number" id="black-pikafish-movetime" value="1000" min="100" max="30000" step="100">
+                        </div>
+                        <div class="field" id="black-pikafish-depth-field" style="display:none">
+                            <label>Depth</label>
+                            <input type="number" id="black-pikafish-depth" value="20" min="1" max="40">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="config-side pikafish">
@@ -145,6 +189,10 @@
                         </label>
                     </div>
                     <div id="pikafish-options">
+                        <div class="field">
+                            <label>Engine Path</label>
+                            <input type="text" id="pikafish-engine-path" placeholder="C:\path\to\pikafish-bmi2.exe">
+                        </div>
                         <div class="field">
                             <label>Mode</label>
                             <select id="pikafish-mode">
@@ -183,7 +231,7 @@
         </div>
     </div>
 
-    <script src="/static/board.js?v=20260327-11"></script>
-    <script src="/static/app.js?v=20260327-11"></script>
+    <script src="/static/board.js?v=20260327-12"></script>
+    <script src="/static/app.js?v=20260327-12"></script>
 </body>
 </html>

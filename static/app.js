@@ -21,6 +21,8 @@ let renderer = null;
 const presetConfigs = {};
 let availablePrompts = [];
 let defaultPromptName = 'zh';
+let defaultPikafishPath = 'pikafish\\pikafish-bmi2.exe';
+let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -86,6 +88,20 @@ function populatePromptOptions(side) {
     setSelectValue(promptEl, currentValue, defaultPromptName);
 }
 
+function applyDefaultPikafishPaths() {
+    for (const side of ['red', 'black']) {
+        const input = document.getElementById(`${side}-pikafish-path`);
+        if (input && !input.value.trim()) {
+            input.value = defaultPikafishPath;
+        }
+    }
+
+    const evalInput = document.getElementById('pikafish-engine-path');
+    if (evalInput && !evalInput.value.trim()) {
+        evalInput.value = defaultEvalPikafishPath || defaultPikafishPath;
+    }
+}
+
 // --- Initialization ---
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -109,21 +125,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
 
-    // Player type toggle - show/hide LLM fields
+    // Player type toggle - show/hide LLM / Pikafish fields
     for (const side of ['red', 'black']) {
         const sel = document.getElementById(`${side}-type`);
+        const pikafishMode = document.getElementById(`${side}-pikafish-mode`);
+        const pikafishMovetimeField = document.getElementById(`${side}-pikafish-movetime-field`);
+        const pikafishDepthField = document.getElementById(`${side}-pikafish-depth-field`);
+
+        pikafishMode.addEventListener('change', () => {
+            pikafishMovetimeField.style.display = pikafishMode.value === 'movetime' ? '' : 'none';
+            pikafishDepthField.style.display = pikafishMode.value === 'depth' ? '' : 'none';
+        });
+
         sel.addEventListener('change', () => {
             const val = sel.value;
             const isLLM = val.startsWith('llm');
+            const isPikafish = val === 'pikafish';
             document.getElementById(`${side}-llm-fields`).style.display = isLLM ? 'block' : 'none';
             document.getElementById(`${side}-custom-fields`).style.display =
                 (val === 'llm:custom') ? 'block' : 'none';
+            document.getElementById(`${side}-pikafish-fields`).style.display = isPikafish ? 'block' : 'none';
             if (val.startsWith('llm:') && val !== 'llm:custom') {
                 applyLlmOptionDefaults(side, val.substring(4));
             } else if (val === 'llm:custom') {
                 applyLlmOptionDefaults(side);
             }
         });
+        pikafishMode.dispatchEvent(new Event('change'));
         sel.dispatchEvent(new Event('change'));
     }
 
@@ -151,6 +179,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         pikafishMovetimeField.style.display = pikafishMode.value === 'movetime' ? '' : 'none';
         pikafishDepthField.style.display = pikafishMode.value === 'depth' ? '' : 'none';
     });
+    pikafishEnabled.dispatchEvent(new Event('change'));
+    pikafishMode.dispatchEvent(new Event('change'));
 
     // Board click-to-move callbacks
     renderer.onMoveCallback = (move) => {
@@ -177,6 +207,8 @@ async function loadPresets() {
         const resp = await fetch('/api/presets');
         const data = await resp.json();
         const presets = data.presets || [];
+        defaultPikafishPath = data.default_pikafish_path || defaultPikafishPath;
+        defaultEvalPikafishPath = data.default_eval_pikafish_path || defaultPikafishPath;
 
         for (const side of ['red', 'black']) {
             const typeSel = document.getElementById(`${side}-type`);
@@ -196,6 +228,7 @@ async function loadPresets() {
             typeSel.appendChild(customOpt);
         }
     } catch (e) {
+        defaultEvalPikafishPath = defaultPikafishPath;
         for (const side of ['red', 'black']) {
             const typeSel = document.getElementById(`${side}-type`);
             const opt = document.createElement('option');
@@ -204,6 +237,8 @@ async function loadPresets() {
             typeSel.appendChild(opt);
         }
     }
+
+    applyDefaultPikafishPaths();
 }
 
 async function loadPrompts() {
@@ -249,7 +284,8 @@ async function apiGet(path) {
 function getConfigs() {
     const result = {};
     for (const side of ['red', 'black']) {
-        const typeVal = document.getElementById(`${side}-type`).value;
+        const typeSelect = document.getElementById(`${side}-type`);
+        const typeVal = typeSelect.value || typeSelect.options[typeSelect.selectedIndex]?.value || '';
         const llmOptions = {
             enable_thinking: document.getElementById(`${side}-thinking-mode`).value === 'true',
             prompt_name: document.getElementById(`${side}-prompt-name`).value,
@@ -271,6 +307,16 @@ function getConfigs() {
                 preset: typeVal.substring(4),
                 ...llmOptions,
             };
+        } else if (typeVal === 'pikafish') {
+            result[side] = {
+                type: 'pikafish',
+                engine_path: document.getElementById(`${side}-pikafish-path`).value.trim() || defaultPikafishPath,
+                engine_mode: document.getElementById(`${side}-pikafish-mode`).value,
+                engine_movetime: parseInt(document.getElementById(`${side}-pikafish-movetime`).value) || 1000,
+                engine_depth: parseInt(document.getElementById(`${side}-pikafish-depth`).value) || 20,
+            };
+        } else {
+            throw new Error(`Unsupported ${side} player type: ${typeVal || '(empty)'}`);
         }
     }
     return result;
@@ -283,11 +329,18 @@ async function onStart() {
         const configs = getConfigs();
         // Validate LLM configs (only for custom, presets are validated server-side)
         for (const side of ['red', 'black']) {
+            if (!configs[side]) {
+                throw new Error(`Missing ${side} side configuration. Please reselect Player Type.`);
+            }
             if (configs[side].type === 'llm' && !configs[side].preset) {
                 if (!configs[side].api_base || !configs[side].api_key || !configs[side].model) {
                     alert(`Please fill in ${side} side LLM configuration.`);
                     return;
                 }
+            }
+            if (configs[side].type === 'pikafish' && !configs[side].engine_path) {
+                alert(`Please fill in ${side} side Pikafish path.`);
+                return;
             }
         }
 
@@ -296,6 +349,7 @@ async function onStart() {
         setStatus('Creating game...');
         const pikafishConfig = {
             enabled: document.getElementById('pikafish-enabled').checked,
+            engine_path: document.getElementById('pikafish-engine-path').value.trim() || defaultEvalPikafishPath,
             mode: document.getElementById('pikafish-mode').value,
             movetime: parseInt(document.getElementById('pikafish-movetime').value) || 2000,
             depth: parseInt(document.getElementById('pikafish-depth').value) || 20,

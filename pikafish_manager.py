@@ -1,6 +1,6 @@
 """
-Pikafish UCI engine manager for async position evaluation.
-Manages a Pikafish subprocess and provides non-blocking evaluation.
+Pikafish UCI engine manager for async position evaluation and move generation.
+Manages a Pikafish subprocess and provides non-blocking engine access.
 """
 
 import asyncio
@@ -9,6 +9,7 @@ import re
 from typing import Optional, Callable
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_ENGINE_FILENAME = "pikafish-bmi2.exe"
 DEFAULT_ENGINE_PATH = os.path.join(BASE_DIR, "pikafish", "pikafish-bmi2.exe")
 
 
@@ -24,8 +25,16 @@ def _parse_score_from_info(line: str) -> Optional[dict]:
     return None
 
 
+def _parse_bestmove(line: str) -> Optional[str]:
+    """Parse a UCI bestmove line and return the move."""
+    m = re.match(r"bestmove\s+(\S+)", line)
+    if m:
+        return m.group(1)
+    return None
+
+
 class PikafishEvaluator:
-    """Manages a Pikafish UCI subprocess for async position evaluation."""
+    """Manages a Pikafish UCI subprocess for async evaluation and move search."""
 
     def __init__(self, engine_path: str = DEFAULT_ENGINE_PATH,
                  movetime: Optional[int] = 2000,
@@ -68,51 +77,75 @@ class PikafishEvaluator:
         if not self._alive:
             return
 
-        async with self._lock:
-            self._generation += 1
-            gen = self._generation
+        result = await self.analyze(fen)
+        if result and result.get("score") is not None:
+            callback(move_number, result["score"])
 
-            # Stop any ongoing analysis
-            if self._analyzing:
-                await self._send("stop")
-                await self._read_until("bestmove")
-                self._analyzing = False
+    async def analyze(self, fen: str) -> Optional[dict]:
+        """Analyze a position and return the best move plus latest score."""
+        if not self._alive:
+            return None
 
-            # Send position and start analysis
-            await self._send(f"position fen {fen}")
+        try:
+            async with self._lock:
+                self._generation += 1
+                gen = self._generation
 
-            if self.depth is not None:
-                await self._send(f"go depth {self.depth}")
-            else:
-                await self._send(f"go movetime {self.movetime or 2000}")
-
-            self._analyzing = True
-
-            # Read info lines until bestmove
-            last_score = None
-            while True:
-                line = await self._readline()
-                if line is None:
-                    # Process died
-                    self._alive = False
-                    return
-
-                if gen != self._generation:
-                    # A newer evaluation was requested; discard this one
-                    return
-
-                score = _parse_score_from_info(line)
-                if score is not None:
-                    last_score = score
-
-                if line.startswith("bestmove"):
+                # Stop any ongoing analysis
+                if self._analyzing:
+                    await self._send("stop")
+                    await self._read_until("bestmove")
                     self._analyzing = False
-                    break
 
-            # Normalize score to red's perspective
-            if last_score and gen == self._generation:
-                normalized = self._normalize_score(last_score, fen)
-                callback(move_number, normalized)
+                # Send position and start analysis
+                await self._send(f"position fen {fen}")
+
+                if self.depth is not None:
+                    await self._send(f"go depth {self.depth}")
+                else:
+                    await self._send(f"go movetime {self.movetime or 2000}")
+
+                self._analyzing = True
+
+                bestmove = None
+                last_score = None
+                while True:
+                    line = await self._readline()
+                    if line is None:
+                        self._alive = False
+                        return None
+
+                    if gen != self._generation:
+                        return None
+
+                    score = _parse_score_from_info(line)
+                    if score is not None:
+                        last_score = score
+
+                    parsed_bestmove = _parse_bestmove(line)
+                    if parsed_bestmove is not None:
+                        bestmove = parsed_bestmove
+                        self._analyzing = False
+                        break
+
+                result = {
+                    "move": bestmove,
+                    "score": self._normalize_score(last_score, fen) if last_score else None,
+                }
+                return result
+        except asyncio.CancelledError:
+            await self.stop_analysis()
+            raise
+
+    async def bestmove(self, fen: str) -> Optional[str]:
+        """Return the engine's best move for the given position."""
+        result = await self.analyze(fen)
+        if not result:
+            return None
+        move = result.get("move")
+        if not move or move == "(none)":
+            return None
+        return move
 
     async def stop_analysis(self):
         """Stop any ongoing analysis."""
