@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from xiangqi import Board
 from llm_client import LLMPlayer
 from prompt_registry import get_default_prompt_name, get_prompt_profile, list_prompt_profiles, resolve_prompt_name
+from pikafish_manager import PikafishEvaluator, DEFAULT_ENGINE_PATH
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -254,10 +255,19 @@ def _validate_prompt_config(config: PlayerConfig):
         raise HTTPException(400, str(e))
 
 
+class PikafishConfig(BaseModel):
+    enabled: bool = False
+    mode: str = "movetime"    # "movetime" | "depth"
+    movetime: int = 1000
+    depth: int = 20
+    score_type: str = "Elo"  # "Elo" | "PawnValueNormalized" | "Raw"
+
+
 class CreateGameRequest(BaseModel):
     fen: str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w"
     red: PlayerConfig
     black: PlayerConfig
+    pikafish: PikafishConfig = PikafishConfig()
 
 
 class HumanMoveRequest(BaseModel):
@@ -287,6 +297,9 @@ class GameSession:
         # For human move input
         self.human_move_event = asyncio.Event()
         self.human_move: Optional[str] = None
+        # Pikafish engine evaluator
+        self.pikafish: Optional[PikafishEvaluator] = None
+        self.pikafish_config: Optional[PikafishConfig] = None
 
     def broadcast(self, event_type: str, data: dict):
         event = {"type": event_type, **data}
@@ -298,6 +311,19 @@ class GameSession:
 # --- Global state ---
 
 games: dict[str, GameSession] = {}
+
+
+# --- Pikafish evaluation helper ---
+
+async def _pikafish_evaluate(game: GameSession, fen: str, move_number: int):
+    """Run Pikafish evaluation and broadcast the result (fire-and-forget)."""
+    try:
+        score_type = game.pikafish_config.score_type if game.pikafish_config else "Elo"
+        def on_result(move_num, score):
+            game.broadcast("eval", {"move_number": move_num, "score": score, "score_type": score_type})
+        await game.pikafish.evaluate(fen, move_number, on_result)
+    except Exception:
+        pass
 
 
 # --- Game loop ---
@@ -312,6 +338,12 @@ async def game_loop(game: GameSession):
                 write_game_log(game)
             except Exception:
                 pass
+        if game.pikafish:
+            try:
+                await game.pikafish.shutdown()
+            except Exception:
+                pass
+            game.pikafish = None
 
 
 async def _game_loop_inner(game: GameSession):
@@ -367,6 +399,8 @@ async def _game_loop_inner(game: GameSession):
                     }
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
+                    if game.pikafish:
+                        asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
                     move_made = True
 
             elif config.type == "random":
@@ -389,6 +423,8 @@ async def _game_loop_inner(game: GameSession):
                     }
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
+                    if game.pikafish:
+                        asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
                     move_made = True
 
             elif config.type == "llm":
@@ -437,6 +473,8 @@ async def _game_loop_inner(game: GameSession):
                             }
                             game.move_history.append(move_record)
                             game.broadcast("move", move_record)
+                            if game.pikafish:
+                                asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
                             move_made = True
                         except ValueError as e:
                             game.status = "finished"
@@ -485,6 +523,11 @@ async def lifespan(app: FastAPI):
     for g in games.values():
         if g.task and not g.task.done():
             g.task.cancel()
+        if g.pikafish:
+            try:
+                await g.pikafish.shutdown()
+            except Exception:
+                pass
 
 
 app = FastAPI(title="BattleChess", lifespan=lifespan)
@@ -572,6 +615,7 @@ async def create_game(req: CreateGameRequest):
 
     game_id = str(uuid.uuid4())[:8]
     game = GameSession(game_id, req.fen, red, black)
+    game.pikafish_config = req.pikafish
     games[game_id] = game
     return {"game_id": game_id, "fen": req.fen}
 
@@ -603,6 +647,23 @@ async def start_game(game_id: str):
         raise HTTPException(400, "Game already finished, create a new one")
 
     game.task = asyncio.create_task(game_loop(game))
+
+    # Start Pikafish evaluator if enabled
+    if game.pikafish_config and game.pikafish_config.enabled:
+        try:
+            cfg = game.pikafish_config
+            print(f"  [Pikafish] Starting engine: mode={cfg.mode}, movetime={cfg.movetime}, depth={cfg.depth}, score_type={cfg.score_type}")
+            evaluator = PikafishEvaluator(
+                engine_path=DEFAULT_ENGINE_PATH,
+                movetime=cfg.movetime if cfg.mode == "movetime" else None,
+                depth=cfg.depth if cfg.mode == "depth" else None,
+                score_type=cfg.score_type,
+            )
+            await evaluator.start()
+            game.pikafish = evaluator
+        except Exception:
+            pass  # Engine unavailable, continue without evaluation
+
     return {"status": "started"}
 
 
@@ -668,6 +729,13 @@ async def seek_game(game_id: str, req: SeekGameRequest):
     game.human_move = None
     game.human_move_event = asyncio.Event()
 
+    # Stop any ongoing Pikafish analysis
+    if game.pikafish:
+        try:
+            await game.pikafish.stop_analysis()
+        except Exception:
+            pass
+
     response = {
         "status": "seeked",
         "ply": target_ply,
@@ -686,6 +754,12 @@ async def reset_game(game_id: str):
         raise HTTPException(404, "Game not found")
     if game.task and not game.task.done():
         game.task.cancel()
+    if game.pikafish:
+        try:
+            await game.pikafish.shutdown()
+        except Exception:
+            pass
+        game.pikafish = None
     game.board = Board(game.initial_fen)
     game.status = "waiting"
     game.winner = None

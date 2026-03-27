@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BattleChess - Xiangqi Arena</title>
-    <link rel="icon" type="image/png" href="/static/logo.png?v=20260326-5">
-    <link rel="stylesheet" href="/static/style.css?v=20260326-5">
+    <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-10">
+    <link rel="stylesheet" href="/static/style.css?v=20260327-10">
 </head>
 <body>
     <header id="header">
@@ -37,6 +37,7 @@
                     <button class="btn-secondary" id="btn-step-back" disabled title="Step Back">&#9664;&#9664;</button>
                     <button class="btn-secondary" id="btn-step-forward" disabled title="Step Forward">&#9654;&#9654;</button>
                     <button class="btn-danger" id="btn-reset" disabled>Reset</button>
+                    <button class="btn-secondary btn-small" id="btn-export-fen" title="Copy current FEN to clipboard">Export FEN</button>
                 </div>
             </div>
         </div>
@@ -50,6 +51,9 @@
 
             <!-- Log Tab -->
             <div class="tab-content active" id="tab-log">
+                <div id="eval-chart-container">
+                    <canvas id="eval-chart"></canvas>
+                </div>
                 <div id="game-log"></div>
             </div>
 
@@ -132,6 +136,40 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="config-side pikafish">
+                    <h3><span class="dot pikafish-dot"></span> Pikafish (引擎分析)</h3>
+                    <div class="field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="pikafish-enabled" checked> Enable
+                        </label>
+                    </div>
+                    <div id="pikafish-options">
+                        <div class="field">
+                            <label>Mode</label>
+                            <select id="pikafish-mode">
+                                <option value="movetime" selected>Think Time (限时)</option>
+                                <option value="depth">Depth (深度)</option>
+                            </select>
+                        </div>
+                        <div class="field" id="pikafish-movetime-field">
+                            <label>Think Time (ms)</label>
+                            <input type="number" id="pikafish-movetime" value="1000" min="100" max="30000" step="100">
+                        </div>
+                        <div class="field" id="pikafish-depth-field" style="display:none">
+                            <label>Depth</label>
+                            <input type="number" id="pikafish-depth" value="20" min="1" max="40">
+                        </div>
+                        <div class="field">
+                            <label>Score Type (分数类型)</label>
+                            <select id="pikafish-score-type">
+                                <option value="Elo" selected>Elo (等级分差)</option>
+                                <option value="PawnValueNormalized">Pawn (厘兵值)</option>
+                                <option value="Raw">Raw (原始值)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </main>
@@ -145,7 +183,7 @@
         </div>
     </div>
 
-    <script src="/static/board.js?v=20260326-5"></script>
-    <script src="/static/app.js?v=20260326-5"></script>
+    <script src="/static/board.js?v=20260327-10"></script>
+    <script src="/static/app.js?v=20260327-10"></script>
 </body>
 </html>

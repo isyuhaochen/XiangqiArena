@@ -14,6 +14,7 @@ const state = {
     lastMove: null,
     eventSource: null,
     viewIndex: -1, // -1 = live view, otherwise index into moveHistory for back/forward
+    scoreType: 'Elo',
 };
 
 let renderer = null;
@@ -134,6 +135,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-step-forward').addEventListener('click', onStepForward);
     document.getElementById('btn-init-fen').addEventListener('click', onInitFEN);
     document.getElementById('btn-load-fen').addEventListener('click', onLoadFEN);
+    document.getElementById('btn-export-fen').addEventListener('click', onExportFEN);
+
+    // Pikafish settings toggle
+    const pikafishEnabled = document.getElementById('pikafish-enabled');
+    const pikafishOptions = document.getElementById('pikafish-options');
+    const pikafishMode = document.getElementById('pikafish-mode');
+    const pikafishMovetimeField = document.getElementById('pikafish-movetime-field');
+    const pikafishDepthField = document.getElementById('pikafish-depth-field');
+
+    pikafishEnabled.addEventListener('change', () => {
+        pikafishOptions.style.display = pikafishEnabled.checked ? '' : 'none';
+    });
+    pikafishMode.addEventListener('change', () => {
+        pikafishMovetimeField.style.display = pikafishMode.value === 'movetime' ? '' : 'none';
+        pikafishDepthField.style.display = pikafishMode.value === 'depth' ? '' : 'none';
+    });
 
     // Board click-to-move callbacks
     renderer.onMoveCallback = (move) => {
@@ -148,6 +165,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     window.addEventListener('resize', syncRightColumnHeight);
+
+    // Init eval chart tooltip
+    _initEvalChartTooltip();
 });
 
 // --- Presets ---
@@ -274,10 +294,18 @@ async function onStart() {
         const fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
 
         setStatus('Creating game...');
+        const pikafishConfig = {
+            enabled: document.getElementById('pikafish-enabled').checked,
+            mode: document.getElementById('pikafish-mode').value,
+            movetime: parseInt(document.getElementById('pikafish-movetime').value) || 2000,
+            depth: parseInt(document.getElementById('pikafish-depth').value) || 20,
+            score_type: document.getElementById('pikafish-score-type').value,
+        };
         const { game_id } = await apiPost('/api/game/create', {
             fen,
             red: configs.red,
             black: configs.black,
+            pikafish: pikafishConfig,
         });
 
         state.gameId = game_id;
@@ -393,6 +421,26 @@ function onLoadFEN() {
         enterReadyState(fen, 'FEN loaded');
     } catch (e) {
         alert('Invalid FEN');
+    }
+}
+
+function onExportFEN() {
+    let fen;
+    if (state.viewIndex === -1) {
+        fen = state.fen;
+    } else if (state.viewIndex === 0) {
+        fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
+    } else {
+        fen = state.moveHistory[state.viewIndex - 1].fen;
+    }
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(fen).then(() => {
+            setStatus('FEN copied: ' + fen);
+        }).catch(() => {
+            prompt('Current FEN:', fen);
+        });
+    } else {
+        prompt('Current FEN:', fen);
     }
 }
 
@@ -546,6 +594,12 @@ function connectSSE(gameId) {
     es.addEventListener('seek', (e) => {
         const data = JSON.parse(e.data);
         applySeekState(data);
+    });
+
+    es.addEventListener('eval', (e) => {
+        const data = JSON.parse(e.data);
+        state.scoreType = data.score_type || 'Elo';
+        updateEvalDisplay(data.move_number, data.score);
     });
 
     es.addEventListener('status', (e) => {
@@ -734,7 +788,10 @@ function finalizeLogEntry(moveData) {
         const sideName = moveData.side === 'red' ? 'Red' : 'Black';
         const dotClass = moveData.side === 'red' ? 'red-dot' : 'black-dot';
         const captured = moveData.captured ? ` x${moveData.captured}` : '';
+        // Preserve existing eval badge if any
+        const existingBadge = summary.querySelector('.eval-badge');
         summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${moveData.move}${captured}`;
+        if (existingBadge) summary.appendChild(existingBadge);
         // Collapse it
         _currentLogEntry.removeAttribute('open');
     }
@@ -750,6 +807,351 @@ function clearGameLog() {
     _currentLogContent = null;
     _currentStreamEl = null;
     _currentStreamCls = null;
+    // Hide eval chart
+    const chartContainer = document.getElementById('eval-chart-container');
+    if (chartContainer) chartContainer.style.display = 'none';
+}
+
+// --- Eval Display ---
+
+function formatEvalScore(score, scoreType) {
+    if (score.type === 'mate') {
+        return score.value > 0 ? `M${score.value}` : `M${score.value}`;
+    }
+    if (scoreType === 'Elo') {
+        const pawns = (score.value / 100).toFixed(1);
+        return score.value > 0 ? `+${pawns}` : `${pawns}`;
+    }
+    return score.value > 0 ? `+${score.value}` : `${score.value}`;
+}
+
+function updateEvalDisplay(moveNumber, score) {
+    // Store eval in moveHistory
+    if (moveNumber > 0 && moveNumber <= state.moveHistory.length) {
+        state.moveHistory[moveNumber - 1].eval = score;
+    }
+
+    const scoreType = state.scoreType || 'Elo';
+
+    // Find log entry and update badge
+    const logEntries = document.querySelectorAll('.log-entry');
+    for (const entry of logEntries) {
+        const summary = entry.querySelector('summary');
+        if (!summary) continue;
+        const match = summary.textContent.match(/#(\d+)/);
+        if (match && parseInt(match[1]) === moveNumber) {
+            let badge = summary.querySelector('.eval-badge');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'eval-badge';
+                summary.appendChild(badge);
+            }
+            badge.textContent = formatEvalScore(score, scoreType);
+            const val = score.type === 'cp' ? score.value : (score.value > 0 ? 9999 : -9999);
+            badge.classList.remove('eval-red', 'eval-black', 'eval-even');
+            if (val > 0) badge.classList.add('eval-red');
+            else if (val < 0) badge.classList.add('eval-black');
+            else badge.classList.add('eval-even');
+            break;
+        }
+    }
+
+    // Redraw chart
+    drawEvalChart();
+}
+
+function restoreEvalBadges() {
+    for (const move of state.moveHistory) {
+        if (move.eval) {
+            updateEvalDisplay(move.number, move.eval);
+        }
+    }
+}
+
+// --- Eval Chart ---
+
+// Store chart layout info for tooltip hit-testing
+let _chartState = null;
+
+function _getEvalPoints() {
+    const isElo = (state.scoreType || 'Elo') === 'Elo';
+    // First pass: collect non-mate values to find max
+    let maxAbs = 0;
+    const rawEntries = [];
+    for (const move of state.moveHistory) {
+        if (move.eval) {
+            if (move.eval.type === 'mate') {
+                rawEntries.push({ x: move.number, isMate: true, sign: move.eval.value > 0 ? 1 : -1, raw: move.eval });
+            } else {
+                const val = isElo ? move.eval.value / 100 : move.eval.value;
+                if (Math.abs(val) > maxAbs) maxAbs = Math.abs(val);
+                rawEntries.push({ x: move.number, isMate: false, y: val, raw: move.eval });
+            }
+        }
+    }
+    // Mate cap: fixed ceiling per score type
+    const mateCap = isElo ? 100 : 10000;
+
+    const points = [];
+    for (const e of rawEntries) {
+        if (e.isMate) {
+            points.push({ x: e.x, y: e.sign * mateCap, raw: e.raw });
+        } else {
+            points.push({ x: e.x, y: e.y, raw: e.raw });
+        }
+    }
+    return points;
+}
+
+function _pickYTicks(yRange) {
+    // Pick a nice step so we get ~2-3 ticks on each side of zero
+    const candidates = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+    for (const step of candidates) {
+        if (yRange / step <= 4) return step;
+    }
+    return 5000;
+}
+
+function drawEvalChart() {
+    const container = document.getElementById('eval-chart-container');
+    const canvas = document.getElementById('eval-chart');
+    if (!canvas || !container) return;
+
+    const points = _getEvalPoints();
+    if (points.length === 0) {
+        container.style.display = 'none';
+        _chartState = null;
+        return;
+    }
+    container.style.display = 'block';
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // Layout
+    const padL = 36, padR = 12, padT = 12, padB = 18;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // Y-axis range: symmetric around 0
+    const maxAbs = Math.max(50, ...points.map(p => Math.abs(p.y)));
+    const yRange = maxAbs * 1.15;
+
+    // X-axis range
+    const xMin = 1;
+    const xMax = Math.max(points[points.length - 1].x, 2);
+
+    function toCanvasX(x) { return padL + ((x - xMin) / (xMax - xMin)) * plotW; }
+    function toCanvasY(y) { return padT + ((yRange - y) / (2 * yRange)) * plotH; }
+
+    // Save chart state for tooltip
+    _chartState = { points, padL, padR, padT, padB, plotW, plotH, xMin, xMax, yRange, toCanvasX, toCanvasY, w, h };
+
+    // Clear
+    ctx.clearRect(0, 0, w, h);
+
+    // Background: red top half, black bottom half
+    const midY = toCanvasY(0);
+    ctx.fillStyle = 'rgba(180, 30, 30, 0.05)';
+    ctx.fillRect(padL, padT, plotW, midY - padT);
+    ctx.fillStyle = 'rgba(26, 26, 26, 0.05)';
+    ctx.fillRect(padL, midY, plotW, padT + plotH - midY);
+
+    // Zero line
+    ctx.strokeStyle = '#ccc';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padL, midY);
+    ctx.lineTo(padL + plotW, midY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Y-axis: only a few ticks
+    const yStep = _pickYTicks(yRange);
+    ctx.fillStyle = '#2c2c2c';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let v = -Math.floor(yRange / yStep) * yStep; v <= yRange; v += yStep) {
+        // Fix floating point (e.g. 0.30000000000000004)
+        v = Math.round(v * 1000) / 1000;
+        if (v === 0) continue;
+        const cy = toCanvasY(v);
+        if (cy < padT + 6 || cy > padT + plotH - 6) continue;
+        const label = yStep < 1 ? v.toFixed(1) : String(v);
+        ctx.fillText(v > 0 ? '+' + label : label, padL - 4, cy);
+        ctx.strokeStyle = '#eee';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(padL, cy);
+        ctx.lineTo(padL + plotW, cy);
+        ctx.stroke();
+    }
+
+    // X-axis labels
+    ctx.fillStyle = '#2c2c2c';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const xStep = xMax <= 10 ? 2 : xMax <= 30 ? 5 : 10;
+    for (let x = xStep; x <= xMax; x += xStep) {
+        ctx.fillText(x, toCanvasX(x), padT + plotH + 3);
+    }
+
+    // Fill area: split into positive and negative segments
+    if (points.length >= 1) {
+        // Positive fill (above zero line)
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(padL, padT, plotW, midY - padT);
+        ctx.clip();
+        ctx.beginPath();
+        ctx.moveTo(toCanvasX(points[0].x), midY);
+        for (const p of points) ctx.lineTo(toCanvasX(p.x), toCanvasY(p.y));
+        ctx.lineTo(toCanvasX(points[points.length - 1].x), midY);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(180, 30, 30, 0.15)';
+        ctx.fill();
+        ctx.restore();
+
+        // Negative fill (below zero line)
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(padL, midY, plotW, padT + plotH - midY);
+        ctx.clip();
+        ctx.beginPath();
+        ctx.moveTo(toCanvasX(points[0].x), midY);
+        for (const p of points) ctx.lineTo(toCanvasX(p.x), toCanvasY(p.y));
+        ctx.lineTo(toCanvasX(points[points.length - 1].x), midY);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(26, 26, 26, 0.15)';
+        ctx.fill();
+        ctx.restore();
+    }
+
+    // Draw curve line
+    ctx.strokeStyle = '#c07830';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i++) {
+        const cx = toCanvasX(points[i].x);
+        const cy = toCanvasY(points[i].y);
+        if (i === 0) ctx.moveTo(cx, cy);
+        else ctx.lineTo(cx, cy);
+    }
+    ctx.stroke();
+
+    // Draw dots
+    for (const p of points) {
+        const cx = toCanvasX(p.x);
+        const cy = toCanvasY(p.y);
+        ctx.fillStyle = p.y >= 0 ? '#b41e1e' : '#1a1a1a';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Border
+    ctx.strokeStyle = '#ece6da';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(padL, padT, plotW, plotH);
+}
+
+// --- Eval Chart Tooltip ---
+
+function _initEvalChartTooltip() {
+    const canvas = document.getElementById('eval-chart');
+    if (!canvas) return;
+
+    // Create tooltip element
+    const tooltip = document.createElement('div');
+    tooltip.id = 'eval-tooltip';
+    tooltip.style.cssText = 'position:fixed;display:none;padding:4px 8px;background:rgba(44,44,44,0.92);color:#fff;font-size:11px;font-family:monospace;border-radius:4px;pointer-events:none;z-index:50;white-space:nowrap;';
+    document.body.appendChild(tooltip);
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!_chartState || _chartState.points.length === 0) {
+            tooltip.style.display = 'none';
+            return;
+        }
+
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const { points, padL, padT, plotW, plotH, toCanvasX, toCanvasY } = _chartState;
+
+        // Check if mouse is inside plot area
+        if (mx < padL || mx > padL + plotW || my < padT || my > padT + plotH) {
+            tooltip.style.display = 'none';
+            return;
+        }
+
+        // Find closest point
+        let closest = null;
+        let minDist = Infinity;
+        for (const p of points) {
+            const cx = toCanvasX(p.x);
+            const dist = Math.abs(mx - cx);
+            if (dist < minDist) {
+                minDist = dist;
+                closest = p;
+            }
+        }
+
+        if (!closest || minDist > 30) {
+            tooltip.style.display = 'none';
+            return;
+        }
+
+        const scoreType = state.scoreType || 'Elo';
+        const label = formatEvalScore(closest.raw, scoreType);
+        const sideLabel = closest.y >= 0 ? 'Red' : 'Black';
+        tooltip.textContent = `#${closest.x}  ${label}  (${sideLabel})`;
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX + 12) + 'px';
+        tooltip.style.top = (e.clientY - 28) + 'px';
+
+        // Redraw chart with highlight
+        drawEvalChart();
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        const hx = toCanvasX(closest.x);
+        const hy = toCanvasY(closest.y);
+        // Vertical guide line
+        ctx.strokeStyle = 'rgba(192,120,48,0.4)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(hx, padT);
+        ctx.lineTo(hx, padT + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Highlight dot
+        ctx.fillStyle = '#c07830';
+        ctx.beginPath();
+        ctx.arc(hx, hy, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+        drawEvalChart(); // redraw without highlight
+    });
 }
 
 function showGameOver(winner, reason) {

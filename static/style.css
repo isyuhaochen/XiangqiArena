@@ -218,6 +218,22 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     overflow: hidden;
 }
 
+/* Eval chart */
+#eval-chart-container {
+    flex-shrink: 0;
+    padding: 8px 8px 4px 8px;
+    border-bottom: 1px solid #ece6da;
+    display: none;  /* shown when eval data exists */
+}
+#eval-chart {
+    width: 100%;
+    height: 140px;
+    border-radius: 6px;
+    background: #faf8f4;
+    border: 1px solid #ece6da;
+    cursor: crosshair;
+}
+
 #tab-settings {
     overflow-y: auto;
 }
@@ -266,7 +282,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .log-entry-content .entry.tool-call { color: #6b4c30; font-weight: 600; }
 .log-entry-content .entry.tool-result { color: var(--text-secondary); font-size: 10px; white-space: pre-wrap; word-break: break-all; }
 .log-entry-content .entry.thinking { color: var(--text-primary); white-space: pre-wrap; }
-.log-entry-content .entry.reasoning { color: #7c6a50; white-space: pre-wrap; font-style: italic; }
+.log-entry-content .entry.reasoning { color: #7c6a50; white-space: pre-wrap; }
 
 .dot {
     width: 8px;
@@ -290,6 +306,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 }
 .config-side.red { border-color: var(--red-color); background: rgba(180,30,30,0.03); }
 .config-side.black { border-color: var(--black-color); background: rgba(26,26,26,0.03); }
+.config-side.pikafish { border-color: var(--accent); background: rgba(192,120,48,0.03); }
 .config-side h3 {
     font-size: 13px;
     margin-bottom: 10px;
@@ -299,6 +316,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 }
 .config-side.red h3 { color: var(--red-color); }
 .config-side.black h3 { color: var(--black-color); }
+.config-side.pikafish h3 { color: var(--accent); }
+.pikafish-dot { background: var(--accent); }
 
 .field { margin-bottom: 8px; }
 .field label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 2px; }
@@ -313,6 +332,41 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .field input:focus, .field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(192,120,48,0.15); }
 
 .llm-fields { margin-top: 8px; }
+
+.checkbox-label {
+    display: flex !important;
+    align-items: center;
+    font-size: 12px !important;
+    color: var(--text-primary) !important;
+    cursor: pointer;
+}
+.checkbox-label input[type="checkbox"] {
+    width: auto;
+    margin-right: 6px;
+}
+
+/* Eval badge on log entry summary */
+.eval-badge {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+.eval-badge.eval-red {
+    background: rgba(180, 30, 30, 0.12);
+    color: var(--red-color);
+}
+.eval-badge.eval-black {
+    background: rgba(26, 26, 26, 0.10);
+    color: var(--black-color);
+}
+.eval-badge.eval-even {
+    background: rgba(107, 107, 107, 0.10);
+    color: var(--text-secondary);
+}
 
 /* Game over banner */
 .game-over-banner {

@@ -185,6 +185,12 @@ XiangqiArena/
 └── logo.png
 ```
 
+## Acknowledgements
+
+- [Pikafish](https://github.com/official-pikafish/Pikafish) — 强大的开源中国象棋引擎，本项目使用 Pikafish 作为棋局裁判与合法走法生成器。
+
+> 大多数情况下，引擎速度：`vnni512 > bw512 > avx512 > avxvnni > bmi2 > avx2 > sse41-popcnt > ssse3`，请根据自己的 CPU 选择相应的引擎版本。
+
 ## Citation
 
 If you use this project in research or publications, please cite:
