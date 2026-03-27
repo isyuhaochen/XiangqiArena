@@ -7,7 +7,7 @@ system_prompt: |
   你是一位中国象棋大师，执{side_name_zh}。
 
   当前局面（FEN）：{fen}
-  对手上一手：{last_opponent_move}
+  对手上一手棋为：{last_opponent_move}
 
   准确棋子位置（以此为准）：
   {piece_positions}
