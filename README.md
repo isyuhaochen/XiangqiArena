@@ -81,48 +81,6 @@ models:
 - `models[].enable_thinking`：是否启用思考模式
 - `models[].max_completion_tokens`：单次生成的最大 token 数
 
-## Pikafish 配置说明
-
-### 1. 参与方 Pikafish
-
-在右侧 `Settings` 页里：
-
-1. 把红方或黑方的 `Player Type` 设为 `Pikafish`
-2. 填写该方的 `Pikafish Path`
-3. 选择该方的 `Mode`
-4. 根据模式填写 `Think Time (ms)` 或 `Depth`
-
-说明：
-
-- 玩家用 Pikafish 和评估用 Pikafish 是两套独立配置，互不影响。
-- 玩家默认路径由后端提供，默认指向仓库内的 `pikafish-bmi2.exe`。
-- 如果当前项目路径是 `C:\Users\25812\Desktop\各类工具\XiangqiArena`，那么默认玩家路径就是：
-
-```text
-C:\Users\25812\Desktop\各类工具\XiangqiArena\pikafish\pikafish-bmi2.exe
-```
-
-- 如果你在输入框里填的是 `pikafish` 目录，程序会自动补成该目录下的 `pikafish-bmi2.exe`。
-- 如果你想使用别的版本，例如 `pikafish-avx2.exe`、`pikafish-avx512.exe`，请直接填对应 exe 的完整路径。
-
-### 2. 评估用 Pikafish
-
-评估引擎的修改位置有两处：
-
-- 当前对局临时修改：右侧 `Pikafish (引擎分析)` 区域中的 `Engine Path`
-- 全局默认修改：`config.yaml` 里的 `pikafish.eval_engine_path`
-
-评估引擎的路径解析优先级：
-
-1. 当前页面 `Pikafish (引擎分析)` 的 `Engine Path`
-2. `config.yaml -> pikafish.eval_engine_path`
-3. 内置默认值 `.\pikafish\pikafish-bmi2.exe`
-
-这意味着：
-
-- 你可以让参与方使用一个 Pikafish，可同时让评估区使用另一个 Pikafish。
-- 暂停后再继续对局时，评估引擎会按当前配置重新启动。
-
 ## Prompt 文件
 
 Prompt 不再写死在代码里，而是放在 `prompts/*.yaml` 中。

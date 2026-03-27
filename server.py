@@ -16,7 +16,7 @@ from typing import Optional
 import os
 import yaml
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -35,6 +35,7 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
+DEFAULT_ENGINE_RELATIVE_PATH = os.path.join("pikafish", DEFAULT_ENGINE_FILENAME)
 
 
 # --- Config loading ---
@@ -88,8 +89,21 @@ def _normalize_engine_path(path: Optional[str], default_path: str = DEFAULT_ENGI
     return os.path.normpath(candidate)
 
 
+def _display_engine_path(path: Optional[str], default_path: str = DEFAULT_ENGINE_RELATIVE_PATH) -> str:
+    candidate = (path or "").strip() or default_path
+    candidate = os.path.expandvars(os.path.expanduser(candidate))
+    if os.path.isabs(candidate):
+        try:
+            rel = os.path.relpath(candidate, BASE_DIR)
+            if not rel.startswith(".."):
+                candidate = rel
+        except ValueError:
+            pass
+    return os.path.normpath(candidate)
+
+
 def get_default_player_pikafish_path() -> str:
-    return _normalize_engine_path(DEFAULT_ENGINE_PATH)
+    return _display_engine_path(DEFAULT_ENGINE_RELATIVE_PATH)
 
 
 def get_default_eval_pikafish_path() -> str:
@@ -97,7 +111,7 @@ def get_default_eval_pikafish_path() -> str:
     pikafish_cfg = data.get("pikafish", {})
     if not isinstance(pikafish_cfg, dict):
         pikafish_cfg = {}
-    return _normalize_engine_path(pikafish_cfg.get("eval_engine_path"), DEFAULT_ENGINE_PATH)
+    return _display_engine_path(pikafish_cfg.get("eval_engine_path"), DEFAULT_ENGINE_RELATIVE_PATH)
 
 
 # --- Models ---
@@ -109,7 +123,7 @@ def _player_label(config) -> str:
     elif config.type == "random":
         return "Random"
     elif config.type == "pikafish":
-        engine_name = os.path.basename(_resolved_player_engine_path(config))
+        engine_name = os.path.basename(_display_player_engine_path(config))
         return f"Pikafish ({engine_name})"
     elif config.type == "llm":
         name = config.preset or config.model or "unknown"
@@ -124,7 +138,7 @@ def _player_filename_label(config) -> str:
     if config.type == "random":
         return "Random"
     if config.type == "pikafish":
-        engine_name = os.path.splitext(os.path.basename(_resolved_player_engine_path(config)))[0]
+        engine_name = os.path.splitext(os.path.basename(_display_player_engine_path(config)))[0]
         return f"Pikafish-{engine_name}"
     if config.type == "llm":
         name = config.preset or config.model or "unknown"
@@ -239,7 +253,7 @@ def _player_config_summary(config) -> dict:
         })
     elif config.type == "pikafish":
         summary.update({
-            "engine_path": _resolved_player_engine_path(config),
+            "engine_path": _display_player_engine_path(config),
             "engine_mode": _resolved_player_engine_mode(config),
             "engine_movetime": _resolved_player_engine_movetime(config),
             "engine_depth": _resolved_player_engine_depth(config),
@@ -314,7 +328,11 @@ def _resolved_prompt_name(config: PlayerConfig) -> str:
 
 
 def _resolved_player_engine_path(config: PlayerConfig) -> str:
-    return _normalize_engine_path(config.engine_path, get_default_player_pikafish_path())
+    return _normalize_engine_path(config.engine_path, DEFAULT_ENGINE_RELATIVE_PATH)
+
+
+def _display_player_engine_path(config: PlayerConfig) -> str:
+    return _display_engine_path(config.engine_path, DEFAULT_ENGINE_RELATIVE_PATH)
 
 
 def _resolved_player_engine_mode(config: PlayerConfig) -> str:
@@ -377,6 +395,7 @@ class GameSession:
         self.move_history = []
         self.events = []
         self.event_queues: list[asyncio.Queue] = []
+        self.next_event_id = 1
         self.task: Optional[asyncio.Task] = None
         self.pause_event = asyncio.Event()
         self.pause_event.set()
@@ -386,10 +405,14 @@ class GameSession:
         # Pikafish engine evaluator
         self.pikafish: Optional[PikafishEvaluator] = None
         self.pikafish_config: Optional[PikafishConfig] = None
+        self.eval_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+        self.eval_task: Optional[asyncio.Task] = None
+        self.eval_pending: set[int] = set()
         self.player_engines: dict[str, PikafishEvaluator] = {}
 
     def broadcast(self, event_type: str, data: dict):
-        event = {"type": event_type, **data}
+        event = {"type": event_type, "event_id": self.next_event_id, **data}
+        self.next_event_id += 1
         self.events.append(event)
         for q in self.event_queues:
             q.put_nowait(event)
@@ -423,14 +446,78 @@ def _finish_game(game: GameSession, winner: str, reason: str):
 # --- Pikafish evaluation helper ---
 
 async def _pikafish_evaluate(game: GameSession, fen: str, move_number: int):
-    """Run Pikafish evaluation and broadcast the result (fire-and-forget)."""
+    """Run Pikafish evaluation and broadcast the result."""
     try:
         score_type = game.pikafish_config.score_type if game.pikafish_config else "Elo"
+
         def on_result(move_num, score):
+            for move_record in game.move_history:
+                if move_record.get("number") == move_num:
+                    move_record["eval"] = score
+                    move_record["score_type"] = score_type
+                    break
             game.broadcast("eval", {"move_number": move_num, "score": score, "score_type": score_type})
+
         await game.pikafish.evaluate(fen, move_number, on_result)
     except Exception:
         pass
+
+
+async def _eval_worker(game: GameSession):
+    try:
+        while True:
+            move_number, fen = await game.eval_queue.get()
+            try:
+                if game.pikafish and game.pikafish_config and game.pikafish_config.enabled:
+                    await _pikafish_evaluate(game, fen, move_number)
+            finally:
+                game.eval_pending.discard(move_number)
+                game.eval_queue.task_done()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        game.eval_task = None
+
+
+async def _start_eval_worker(game: GameSession):
+    if not game.pikafish or not game.pikafish_config or not game.pikafish_config.enabled:
+        return
+    if game.eval_task and not game.eval_task.done():
+        return
+    game.eval_task = asyncio.create_task(_eval_worker(game))
+
+
+async def _queue_pikafish_eval(game: GameSession, fen: str, move_number: int):
+    if not game.pikafish or not game.pikafish_config or not game.pikafish_config.enabled:
+        return
+    if move_number in game.eval_pending:
+        return
+    for move_record in game.move_history:
+        if move_record.get("number") == move_number and move_record.get("eval") is not None:
+            return
+    game.eval_pending.add(move_number)
+    await game.eval_queue.put((move_number, fen))
+    await _start_eval_worker(game)
+
+
+async def _queue_missing_evals(game: GameSession):
+    if not game.pikafish or not game.pikafish_config or not game.pikafish_config.enabled:
+        return
+    for move_record in game.move_history:
+        if move_record.get("eval") is None:
+            await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
+
+
+async def _stop_eval_worker(game: GameSession):
+    if game.eval_task and not game.eval_task.done():
+        game.eval_task.cancel()
+        try:
+            await game.eval_task
+        except asyncio.CancelledError:
+            pass
+    game.eval_task = None
+    game.eval_queue = asyncio.Queue()
+    game.eval_pending.clear()
 
 
 async def _shutdown_player_engines(game: GameSession):
@@ -464,8 +551,9 @@ async def _start_eval_engine(game: GameSession):
     try:
         cfg = game.pikafish_config
         eval_engine_path = _resolved_eval_engine_path(cfg)
+        eval_engine_path_display = _display_engine_path(cfg.engine_path, get_default_eval_pikafish_path())
         print(
-            f"  [Pikafish] Starting evaluator: engine={eval_engine_path}, "
+            f"  [Pikafish] Starting evaluator: engine={eval_engine_path_display}, "
             f"mode={cfg.mode}, movetime={cfg.movetime}, depth={cfg.depth}, score_type={cfg.score_type}"
         )
         evaluator = PikafishEvaluator(
@@ -476,6 +564,8 @@ async def _start_eval_engine(game: GameSession):
         )
         await evaluator.start()
         game.pikafish = evaluator
+        await _start_eval_worker(game)
+        await _queue_missing_evals(game)
     except Exception:
         pass
 
@@ -487,12 +577,20 @@ async def game_loop(game: GameSession):
     try:
         await _game_loop_inner(game)
     finally:
+        if game.status == "finished" and game.pikafish:
+            try:
+                await game.eval_queue.join()
+            except Exception:
+                pass
+        if game.status == "finished":
+            game.broadcast("status", {"status": "finished"})
         if game.status == "finished" and game.move_history:
             try:
                 write_game_log(game)
             except Exception:
                 pass
-        if game.pikafish:
+        if game.status == "finished" and game.pikafish:
+            await _stop_eval_worker(game)
             try:
                 await game.pikafish.shutdown()
             except Exception:
@@ -547,7 +645,7 @@ async def _game_loop_inner(game: GameSession):
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
                     if game.pikafish:
-                        asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
+                        await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
                     move_made = True
 
             elif config.type == "random":
@@ -563,7 +661,7 @@ async def _game_loop_inner(game: GameSession):
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
                     if game.pikafish:
-                        asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
+                        await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
                     move_made = True
 
             elif config.type == "llm":
@@ -605,7 +703,7 @@ async def _game_loop_inner(game: GameSession):
                             game.move_history.append(move_record)
                             game.broadcast("move", move_record)
                             if game.pikafish:
-                                asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
+                                await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
                             move_made = True
                         except ValueError as e:
                             _finish_game(game, "black" if side == 'w' else "red", f"Invalid move by {side_name}: {e}")
@@ -628,6 +726,7 @@ async def _game_loop_inner(game: GameSession):
                         "side": side_name,
                         "content": (
                             f"Pikafish ({os.path.basename(_resolved_player_engine_path(config))}) "
+                            f"[{_display_player_engine_path(config)}] "
                             f"analyzing, {limit_text}"
                         ),
                     },
@@ -645,7 +744,7 @@ async def _game_loop_inner(game: GameSession):
                 game.move_history.append(move_record)
                 game.broadcast("move", move_record)
                 if game.pikafish:
-                    asyncio.create_task(_pikafish_evaluate(game, move_record["fen"], move_record["number"]))
+                    await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
                 move_made = True
 
         except Exception as e:
@@ -673,6 +772,7 @@ async def lifespan(app: FastAPI):
     for g in games.values():
         if g.task and not g.task.done():
             g.task.cancel()
+        await _stop_eval_worker(g)
         if g.pikafish:
             try:
                 await g.pikafish.shutdown()
@@ -769,7 +869,7 @@ def _validate_pikafish_player_config(config: PlayerConfig):
 
 
 def _resolved_eval_engine_path(config: PikafishConfig) -> str:
-    return _normalize_engine_path(config.engine_path, get_default_eval_pikafish_path())
+    return _normalize_engine_path(config.engine_path, DEFAULT_ENGINE_RELATIVE_PATH)
 
 
 def _validate_eval_pikafish_config(config: PikafishConfig):
@@ -848,7 +948,6 @@ async def pause_game(game_id: str):
         raise HTTPException(400, "Game is not playing")
     game.pause_event.clear()
     game.status = "paused"
-    await _shutdown_player_engines(game)
     if game.task and not game.task.done():
         game.task.cancel()
         try:
@@ -872,6 +971,7 @@ async def resume_game(game_id: str):
     if not game.task or game.task.done():
         game.task = asyncio.create_task(game_loop(game))
     await _start_eval_engine(game)
+    await _queue_missing_evals(game)
     return {"status": "resumed"}
 
 
@@ -900,8 +1000,10 @@ async def seek_game(game_id: str, req: SeekGameRequest):
     game.winner = None
     game.reason = None
     game.events = []
+    game.next_event_id = 1
     game.human_move = None
     game.human_move_event = asyncio.Event()
+    await _stop_eval_worker(game)
 
     # Stop any ongoing Pikafish analysis
     if game.pikafish:
@@ -909,6 +1011,8 @@ async def seek_game(game_id: str, req: SeekGameRequest):
             await game.pikafish.stop_analysis()
         except Exception:
             pass
+        await _start_eval_worker(game)
+        await _queue_missing_evals(game)
 
     response = {
         "status": "seeked",
@@ -928,6 +1032,7 @@ async def reset_game(game_id: str):
         raise HTTPException(404, "Game not found")
     if game.task and not game.task.done():
         game.task.cancel()
+    await _stop_eval_worker(game)
     if game.pikafish:
         try:
             await game.pikafish.shutdown()
@@ -941,6 +1046,7 @@ async def reset_game(game_id: str):
     game.reason = None
     game.move_history.clear()
     game.events.clear()
+    game.next_event_id = 1
     game.pause_event.set()
     game.human_move_event.set()  # Unblock any waiting human move
     game.broadcast("status", {"status": "reset"})
@@ -979,24 +1085,35 @@ async def get_legal_moves(game_id: str, col: int = Query(...), row: int = Query(
 
 
 @app.get("/api/game/{game_id}/stream")
-async def stream_events(game_id: str):
+async def stream_events(game_id: str, request: Request):
     game = games.get(game_id)
     if not game:
         raise HTTPException(404, "Game not found")
 
     queue = asyncio.Queue()
     game.event_queues.append(queue)
+    last_event_id_header = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+    try:
+        last_event_id = int(last_event_id_header) if last_event_id_header else 0
+    except ValueError:
+        last_event_id = 0
+
+    def _format_sse_event(event: dict) -> str:
+        return (
+            f"id: {event.get('event_id', 0)}\n"
+            f"event: {event['type']}\n"
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        )
 
     async def event_generator():
         try:
             for event in game.events:
-                yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("event_id", 0) > last_event_id:
+                    yield _format_sse_event(event)
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    if event.get("type") == "game_over":
-                        break
+                    yield _format_sse_event(event)
                 except asyncio.TimeoutError:
                     yield f"event: ping\ndata: {{}}\n\n"
         except asyncio.CancelledError:

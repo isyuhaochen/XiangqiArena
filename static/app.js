@@ -641,8 +641,8 @@ function connectSSE(gameId) {
         state.status = 'finished';
         renderer.humanInteractive = false;
         showGameOver(data.winner, data.reason);
+        setStatus('Game over, finishing remaining Pikafish evaluations...');
         updateUI();
-        es.close();
     });
 
     es.addEventListener('seek', (e) => {
@@ -664,6 +664,9 @@ function connectSSE(gameId) {
         } else if (data.status === 'playing') {
             state.status = 'playing';
             setStatus('Game resumed');
+        } else if (data.status === 'finished') {
+            state.status = 'finished';
+            setStatus('Game over');
         }
         updateUI();
         updateHumanInteractive();
