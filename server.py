@@ -487,8 +487,19 @@ async def _start_eval_worker(game: GameSession):
     game.eval_task = asyncio.create_task(_eval_worker(game))
 
 
+def _is_terminal_fen(fen: str) -> bool:
+    try:
+        board = Board(fen)
+        is_over, _, _ = board.is_game_over()
+        return is_over
+    except Exception:
+        return False
+
+
 async def _queue_pikafish_eval(game: GameSession, fen: str, move_number: int):
     if not game.pikafish or not game.pikafish_config or not game.pikafish_config.enabled:
+        return
+    if _is_terminal_fen(fen):
         return
     if move_number in game.eval_pending:
         return
@@ -617,6 +628,7 @@ async def _game_loop_inner(game: GameSession):
         game.broadcast("turn", {"side": side_name, "fen": game.board.to_fen()})
 
         move_made = False
+        latest_move_record = None
 
         try:
             if config.type == "human":
@@ -644,8 +656,7 @@ async def _game_loop_inner(game: GameSession):
                     move_record = _build_move_record(move_number, side_name, result)
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
-                    if game.pikafish:
-                        await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
+                    latest_move_record = move_record
                     move_made = True
 
             elif config.type == "random":
@@ -660,8 +671,7 @@ async def _game_loop_inner(game: GameSession):
                     move_record = _build_move_record(move_number, side_name, result)
                     game.move_history.append(move_record)
                     game.broadcast("move", move_record)
-                    if game.pikafish:
-                        await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
+                    latest_move_record = move_record
                     move_made = True
 
             elif config.type == "llm":
@@ -702,8 +712,7 @@ async def _game_loop_inner(game: GameSession):
                             move_record = _build_move_record(move_number, side_name, result)
                             game.move_history.append(move_record)
                             game.broadcast("move", move_record)
-                            if game.pikafish:
-                                await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
+                            latest_move_record = move_record
                             move_made = True
                         except ValueError as e:
                             _finish_game(game, "black" if side == 'w' else "red", f"Invalid move by {side_name}: {e}")
@@ -743,8 +752,7 @@ async def _game_loop_inner(game: GameSession):
                 move_record = _build_move_record(move_number, side_name, result)
                 game.move_history.append(move_record)
                 game.broadcast("move", move_record)
-                if game.pikafish:
-                    await _queue_pikafish_eval(game, move_record["fen"], move_record["number"])
+                latest_move_record = move_record
                 move_made = True
 
         except Exception as e:
@@ -760,6 +768,9 @@ async def _game_loop_inner(game: GameSession):
         if is_over:
             _finish_game(game, winner, reason)
             return
+
+        if game.pikafish and latest_move_record:
+            await _queue_pikafish_eval(game, latest_move_record["fen"], latest_move_record["number"])
 
         await asyncio.sleep(0.3)
 

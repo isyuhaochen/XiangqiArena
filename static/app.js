@@ -420,7 +420,7 @@ function applySeekState(data, statusMessage = null) {
     state.lastMove = state.moveHistory.length > 0 ? state.moveHistory[state.moveHistory.length - 1].move : null;
     state.viewIndex = -1;
 
-    clearGameLog();
+    syncGameLogWithHistory();
     renderer.clearSelection();
     renderer.render(state.fen, state.lastMove);
     if (statusMessage) {
@@ -438,8 +438,7 @@ async function onPause() {
             state.status = 'paused';
         } else if (state.status === 'paused') {
             if (state.viewIndex !== -1) {
-                const seekResult = await apiPost(`/api/game/${state.gameId}/seek`, { ply: state.viewIndex });
-                applySeekState(seekResult, `Resuming from move #${seekResult.ply}`);
+                await apiPost(`/api/game/${state.gameId}/seek`, { ply: state.viewIndex });
             }
             await apiPost(`/api/game/${state.gameId}/resume`);
             state.status = 'playing';
@@ -647,7 +646,7 @@ function connectSSE(gameId) {
 
     es.addEventListener('seek', (e) => {
         const data = JSON.parse(e.data);
-        applySeekState(data);
+        applySeekState(data, `Position reset to move #${data.ply}`);
     });
 
     es.addEventListener('eval', (e) => {
@@ -874,6 +873,92 @@ function clearGameLog() {
     if (chartContainer) chartContainer.style.display = 'none';
 }
 
+function applyEvalBadge(summary, score, scoreType) {
+    if (!summary || !score) return;
+
+    let badge = summary.querySelector('.eval-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'eval-badge';
+        summary.appendChild(badge);
+    }
+
+    badge.textContent = formatEvalScore(score, scoreType);
+    const val = score.type === 'cp' ? score.value : (score.value > 0 ? 9999 : -9999);
+    badge.classList.remove('eval-red', 'eval-black', 'eval-even');
+    if (val > 0) badge.classList.add('eval-red');
+    else if (val < 0) badge.classList.add('eval-black');
+    else badge.classList.add('eval-even');
+}
+
+function appendHistoricalLogEntry(moveData) {
+    const sideName = moveData.side === 'red' ? 'Red' : 'Black';
+    const dotClass = moveData.side === 'red' ? 'red-dot' : 'black-dot';
+    const captured = moveData.captured ? ` x${moveData.captured}` : '';
+
+    const details = document.createElement('details');
+    details.className = `log-entry ${moveData.side}`;
+
+    const summary = document.createElement('summary');
+    summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${formatMoveLabel(moveData)}${captured}`;
+    details.appendChild(summary);
+
+    const content = document.createElement('div');
+    content.className = 'log-entry-content';
+    details.appendChild(content);
+
+    if (moveData.eval) {
+        applyEvalBadge(summary, moveData.eval, moveData.score_type || state.scoreType || 'Elo');
+    }
+
+    getGameLogEl().appendChild(details);
+}
+
+function rebuildGameLogFromHistory() {
+    clearGameLog();
+    for (const move of state.moveHistory) {
+        appendHistoricalLogEntry(move);
+    }
+    drawEvalChart();
+}
+
+function syncGameLogWithHistory() {
+    const log = getGameLogEl();
+    if (!log) return;
+
+    const desiredCount = state.moveHistory.length;
+    const entries = Array.from(log.querySelectorAll('.log-entry'));
+    let keptCount = 0;
+
+    for (const entry of entries) {
+        const summary = entry.querySelector('summary');
+        const match = summary ? summary.textContent.match(/#(\d+)/) : null;
+        if (!match) {
+            entry.remove();
+            continue;
+        }
+
+        const moveNumber = parseInt(match[1], 10);
+        if (!Number.isFinite(moveNumber) || moveNumber > desiredCount) {
+            entry.remove();
+            continue;
+        }
+        keptCount++;
+    }
+
+    _currentLogEntry = null;
+    _currentLogContent = null;
+    _currentStreamEl = null;
+    _currentStreamCls = null;
+
+    if (keptCount !== desiredCount) {
+        rebuildGameLogFromHistory();
+        return;
+    }
+
+    drawEvalChart();
+}
+
 // --- Eval Display ---
 
 function formatEvalScore(score, scoreType) {
@@ -902,18 +987,7 @@ function updateEvalDisplay(moveNumber, score) {
         if (!summary) continue;
         const match = summary.textContent.match(/#(\d+)/);
         if (match && parseInt(match[1]) === moveNumber) {
-            let badge = summary.querySelector('.eval-badge');
-            if (!badge) {
-                badge = document.createElement('span');
-                badge.className = 'eval-badge';
-                summary.appendChild(badge);
-            }
-            badge.textContent = formatEvalScore(score, scoreType);
-            const val = score.type === 'cp' ? score.value : (score.value > 0 ? 9999 : -9999);
-            badge.classList.remove('eval-red', 'eval-black', 'eval-even');
-            if (val > 0) badge.classList.add('eval-red');
-            else if (val < 0) badge.classList.add('eval-black');
-            else badge.classList.add('eval-even');
+            applyEvalBadge(summary, score, scoreType);
             break;
         }
     }
