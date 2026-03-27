@@ -6,7 +6,7 @@
 
 BattleChess 是一个本地运行的中国象棋 Arena，支持 `Human / Random / LLM / Pikafish` 任意两两对局。
 
-前端使用原生 HTML / CSS / JavaScript 与 Canvas，后端使用 FastAPI。LLM 调用统一走 OpenAI Python SDK。
+前端使用原生 HTML / CSS / JavaScript 与 Canvas，后端使用 FastAPI。LLM 调用统一走 OpenAI Python SDK。当前版本也支持将 `Pikafish` 直接作为红方或黑方参与对战，并且可以与 Human、Random、LLM 或另一个 Pikafish 自由组合对局。
 
 ## 界面预览
 
@@ -14,7 +14,7 @@ BattleChess 是一个本地运行的中国象棋 Arena，支持 `Human / Random 
 
 ## 功能概览
 
-- 支持 `Human / Random / LLM / Pikafish` 四种玩家类型
+- 支持 `Human / Random / LLM / Pikafish` 四种玩家类型，可任意组合对战
 - 支持 Pikafish 直接作为红方或黑方参与对局
 - 支持为每一方单独指定不同的 Pikafish 可执行文件
 - 支持评估用 Pikafish 与参与方 Pikafish 分开配置
