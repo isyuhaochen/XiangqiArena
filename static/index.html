@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BattleChess - Xiangqi Arena</title>
     <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
-    <link rel="stylesheet" href="/static/style.css?v=20260327-13">
+    <link rel="stylesheet" href="/static/style.css?v=20260330-01">
 </head>
 <body>
     <header id="header">
@@ -23,6 +23,16 @@
         <!-- Left: Board + Controls -->
         <div id="board-column">
             <canvas id="board-canvas"></canvas>
+            <div id="timer-bar" class="hidden">
+                <div class="timer-side red-timer">
+                    <span class="timer-label">Red (红方)</span>
+                    <span class="timer-clock" id="timer-red">30:00</span>
+                </div>
+                <div class="timer-side black-timer">
+                    <span class="timer-label">Black (黑方)</span>
+                    <span class="timer-clock" id="timer-black">30:00</span>
+                </div>
+            </div>
             <div id="turn-indicator">Ready to start</div>
 
             <div id="board-controls">
@@ -181,6 +191,25 @@
                     </div>
                 </div>
 
+                <div class="config-side timer">
+                    <h3><span class="dot timer-dot"></span> Timer (计时模式)</h3>
+                    <div class="field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="timer-enabled"> Enable (开启计时)
+                        </label>
+                    </div>
+                    <div id="timer-options" style="display:none">
+                        <div class="field">
+                            <label>Initial Time / 初始时间 (minutes)</label>
+                            <input type="number" id="timer-initial" value="30" min="1" max="180" step="1">
+                        </div>
+                        <div class="field">
+                            <label>Increment / 每步加秒 (seconds)</label>
+                            <input type="number" id="timer-increment" value="10" min="0" max="60" step="1">
+                        </div>
+                    </div>
+                </div>
+
                 <div class="config-side pikafish">
                     <h3><span class="dot pikafish-dot"></span> Pikafish (引擎分析)</h3>
                     <div class="field">
@@ -231,7 +260,7 @@
         </div>
     </div>
 
-    <script src="/static/board.js?v=20260327-12"></script>
-    <script src="/static/app.js?v=20260327-13"></script>
+    <script src="/static/board.js?v=20260330-01"></script>
+    <script src="/static/app.js?v=20260330-01"></script>
 </body>
 </html>

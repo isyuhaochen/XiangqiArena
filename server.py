@@ -367,11 +367,18 @@ class PikafishConfig(BaseModel):
     score_type: str = "Elo"  # "Elo" | "PawnValueNormalized" | "Raw"
 
 
+class TimerConfig(BaseModel):
+    enabled: bool = False
+    initial_time: int = 1800  # seconds (30 minutes)
+    increment: int = 10       # seconds per move
+
+
 class CreateGameRequest(BaseModel):
     fen: str = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w"
     red: PlayerConfig
     black: PlayerConfig
     pikafish: PikafishConfig = PikafishConfig()
+    timer: TimerConfig = TimerConfig()
 
 
 class HumanMoveRequest(BaseModel):
@@ -409,6 +416,11 @@ class GameSession:
         self.eval_task: Optional[asyncio.Task] = None
         self.eval_pending: set[int] = set()
         self.player_engines: dict[str, PikafishEvaluator] = {}
+        # Timer
+        self.timer_config: Optional[TimerConfig] = None
+        self.timer_red: float = 0.0    # remaining seconds
+        self.timer_black: float = 0.0
+        self.timer_turn_start: float = 0.0  # time.time() when current turn started
 
     def broadcast(self, event_type: str, data: dict):
         event = {"type": event_type, "event_id": self.next_event_id, **data}
@@ -441,6 +453,16 @@ def _finish_game(game: GameSession, winner: str, reason: str):
     game.winner = winner
     game.reason = reason
     game.broadcast("game_over", {"winner": winner, "reason": reason})
+
+
+def _broadcast_timer(game: GameSession):
+    """Broadcast current timer state to all clients."""
+    if not game.timer_config or not game.timer_config.enabled:
+        return
+    game.broadcast("timer", {
+        "red": round(game.timer_red, 1),
+        "black": round(game.timer_black, 1),
+    })
 
 
 # --- Pikafish evaluation helper ---
@@ -627,6 +649,11 @@ async def _game_loop_inner(game: GameSession):
 
         game.broadcast("turn", {"side": side_name, "fen": game.board.to_fen()})
 
+        # Start timer for this turn
+        if game.timer_config and game.timer_config.enabled:
+            game.timer_turn_start = time.time()
+            _broadcast_timer(game)
+
         move_made = False
         latest_move_record = None
 
@@ -637,13 +664,26 @@ async def _game_loop_inner(game: GameSession):
                 game.human_move = None
                 game.broadcast("waiting_human", {"side": side_name})
 
-                # Wait with periodic check for game status changes
+                # Wait with periodic check for game status changes and timer
                 while not game.human_move_event.is_set():
                     try:
                         await asyncio.wait_for(game.human_move_event.wait(), timeout=1.0)
                     except asyncio.TimeoutError:
                         if game.status != "playing":
                             return
+                        # Check timer timeout
+                        if game.timer_config and game.timer_config.enabled:
+                            elapsed = time.time() - game.timer_turn_start
+                            remaining = (game.timer_red if side == 'w' else game.timer_black) - elapsed
+                            if remaining <= 0:
+                                winner = "black" if side == 'w' else "red"
+                                if side == 'w':
+                                    game.timer_red = 0
+                                else:
+                                    game.timer_black = 0
+                                _broadcast_timer(game)
+                                _finish_game(game, winner, f"{side_name} ran out of time (超时判负)")
+                                return
                         continue
 
                 if game.status != "playing":
@@ -762,6 +802,27 @@ async def _game_loop_inner(game: GameSession):
         if not move_made:
             _finish_game(game, "black" if side == 'w' else "red", f"{side_name} failed to make a move")
             return
+
+        # Update timer after move
+        if game.timer_config and game.timer_config.enabled:
+            elapsed = time.time() - game.timer_turn_start
+            if side == 'w':
+                game.timer_red -= elapsed
+                if game.timer_red <= 0:
+                    game.timer_red = 0
+                    _broadcast_timer(game)
+                    _finish_game(game, "black", f"{side_name} ran out of time (超时判负)")
+                    return
+                game.timer_red += game.timer_config.increment
+            else:
+                game.timer_black -= elapsed
+                if game.timer_black <= 0:
+                    game.timer_black = 0
+                    _broadcast_timer(game)
+                    _finish_game(game, "red", f"{side_name} ran out of time (超时判负)")
+                    return
+                game.timer_black += game.timer_config.increment
+            _broadcast_timer(game)
 
         # Check game over
         is_over, winner, reason = game.board.is_game_over()
@@ -914,6 +975,10 @@ async def create_game(req: CreateGameRequest):
     game_id = str(uuid.uuid4())[:8]
     game = GameSession(game_id, req.fen, red, black)
     game.pikafish_config = req.pikafish
+    if req.timer.enabled:
+        game.timer_config = req.timer
+        game.timer_red = float(req.timer.initial_time)
+        game.timer_black = float(req.timer.initial_time)
     games[game_id] = game
     return {"game_id": game_id, "fen": req.fen}
 

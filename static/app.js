@@ -24,6 +24,16 @@ let defaultPromptName = 'zh';
 let defaultPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 
+// Timer state
+let timerState = {
+    enabled: false,
+    redTime: 0,
+    blackTime: 0,
+    activeSide: null, // 'w' or 'b'
+    lastSync: 0,      // time of last server sync
+    intervalId: null,
+};
+
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tabName);
@@ -100,6 +110,65 @@ function applyDefaultPikafishPaths() {
     if (evalInput && !evalInput.value.trim()) {
         evalInput.value = defaultEvalPikafishPath || defaultPikafishPath;
     }
+}
+
+function formatTimerDisplay(seconds) {
+    if (seconds < 0) seconds = 0;
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function updateTimerDisplay() {
+    const redEl = document.getElementById('timer-red');
+    const blackEl = document.getElementById('timer-black');
+    if (!redEl || !blackEl) return;
+
+    let redTime = timerState.redTime;
+    let blackTime = timerState.blackTime;
+
+    // Subtract elapsed time for the active side
+    if (timerState.activeSide && timerState.lastSync > 0) {
+        const elapsed = (Date.now() - timerState.lastSync) / 1000;
+        if (timerState.activeSide === 'w') {
+            redTime = Math.max(0, redTime - elapsed);
+        } else {
+            blackTime = Math.max(0, blackTime - elapsed);
+        }
+    }
+
+    redEl.textContent = formatTimerDisplay(redTime);
+    blackEl.textContent = formatTimerDisplay(blackTime);
+
+    // Low time warning (< 60 seconds)
+    redEl.classList.toggle('low-time', redTime < 60 && redTime > 0);
+    blackEl.classList.toggle('low-time', blackTime < 60 && blackTime > 0);
+
+    // Highlight active side
+    redEl.closest('.timer-side').classList.toggle('active', timerState.activeSide === 'w');
+    blackEl.closest('.timer-side').classList.toggle('active', timerState.activeSide === 'b');
+}
+
+function startTimerInterval() {
+    stopTimerInterval();
+    timerState.intervalId = setInterval(updateTimerDisplay, 200);
+}
+
+function stopTimerInterval() {
+    if (timerState.intervalId) {
+        clearInterval(timerState.intervalId);
+        timerState.intervalId = null;
+    }
+}
+
+function resetTimerState() {
+    stopTimerInterval();
+    timerState.enabled = false;
+    timerState.redTime = 0;
+    timerState.blackTime = 0;
+    timerState.activeSide = null;
+    timerState.lastSync = 0;
+    document.getElementById('timer-bar').classList.add('hidden');
 }
 
 // --- Initialization ---
@@ -181,6 +250,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     pikafishEnabled.dispatchEvent(new Event('change'));
     pikafishMode.dispatchEvent(new Event('change'));
+
+    // Timer settings toggle
+    const timerEnabled = document.getElementById('timer-enabled');
+    const timerOptions = document.getElementById('timer-options');
+    timerEnabled.addEventListener('change', () => {
+        timerOptions.style.display = timerEnabled.checked ? '' : 'none';
+    });
+    timerEnabled.dispatchEvent(new Event('change'));
 
     // Board click-to-move callbacks
     renderer.onMoveCallback = (move) => {
@@ -355,11 +432,18 @@ async function onStart() {
             depth: parseInt(document.getElementById('pikafish-depth').value) || 20,
             score_type: document.getElementById('pikafish-score-type').value,
         };
+        const timerEnabledChecked = document.getElementById('timer-enabled').checked;
+        const timerConfig = {
+            enabled: timerEnabledChecked,
+            initial_time: timerEnabledChecked ? parseInt(document.getElementById('timer-initial').value) * 60 : 1800,
+            increment: timerEnabledChecked ? parseInt(document.getElementById('timer-increment').value) : 10,
+        };
         const { game_id } = await apiPost('/api/game/create', {
             fen,
             red: configs.red,
             black: configs.black,
             pikafish: pikafishConfig,
+            timer: timerConfig,
         });
 
         state.gameId = game_id;
@@ -373,6 +457,20 @@ async function onStart() {
         renderer.clearSelection();
         renderer.render(state.fen);
         switchTab('log');
+
+        // Initialize timer display
+        if (timerConfig.enabled) {
+            timerState.enabled = true;
+            timerState.redTime = timerConfig.initial_time;
+            timerState.blackTime = timerConfig.initial_time;
+            timerState.activeSide = null;
+            timerState.lastSync = 0;
+            document.getElementById('timer-bar').classList.remove('hidden');
+            updateTimerDisplay();
+        } else {
+            resetTimerState();
+        }
+
         updateUI();
         updateHumanInteractive();
 
@@ -396,6 +494,7 @@ function closeGameStream() {
 
 function enterReadyState(fen, statusMessage = 'Ready') {
     closeGameStream();
+    resetTimerState();
     state.gameId = null;
     state.status = 'waiting';
     state.moveHistory = [];
@@ -627,6 +726,20 @@ function connectSSE(gameId) {
         updateHumanInteractive();
         // Create a new log entry for this turn
         createLogEntry(data.side);
+        // Update active timer side
+        if (timerState.enabled) {
+            timerState.activeSide = state.turn;
+            timerState.lastSync = Date.now();
+            startTimerInterval();
+        }
+    });
+
+    es.addEventListener('timer', (e) => {
+        const data = JSON.parse(e.data);
+        timerState.redTime = data.red;
+        timerState.blackTime = data.black;
+        timerState.lastSync = Date.now();
+        updateTimerDisplay();
     });
 
     es.addEventListener('waiting_human', (e) => {
@@ -639,6 +752,9 @@ function connectSSE(gameId) {
         const data = JSON.parse(e.data);
         state.status = 'finished';
         renderer.humanInteractive = false;
+        stopTimerInterval();
+        timerState.activeSide = null;
+        updateTimerDisplay();
         showGameOver(data.winner, data.reason);
         setStatus('Game over, finishing remaining Pikafish evaluations...');
         updateUI();
@@ -660,12 +776,18 @@ function connectSSE(gameId) {
         if (data.status === 'paused') {
             state.status = 'paused';
             setStatus('Game paused');
+            stopTimerInterval();
+            timerState.activeSide = null;
+            updateTimerDisplay();
         } else if (data.status === 'playing') {
             state.status = 'playing';
             setStatus('Game resumed');
         } else if (data.status === 'finished') {
             state.status = 'finished';
             setStatus('Game over');
+            stopTimerInterval();
+            timerState.activeSide = null;
+            updateTimerDisplay();
         }
         updateUI();
         updateHumanInteractive();

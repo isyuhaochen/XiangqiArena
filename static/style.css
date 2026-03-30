@@ -112,6 +112,48 @@ body {
 #turn-indicator.red .turn-dot { background: var(--red-color); }
 #turn-indicator.black .turn-dot { background: var(--black-color); }
 
+/* Timer bar */
+#timer-bar {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    gap: 8px;
+}
+.timer-side {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--card-bg);
+    box-shadow: var(--shadow);
+    border: 2px solid transparent;
+}
+.timer-side.red-timer { border-color: var(--red-color); }
+.timer-side.black-timer { border-color: var(--black-color); }
+.timer-side.active { background: rgba(192,120,48,0.08); }
+.timer-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+.red-timer .timer-label { color: var(--red-color); }
+.black-timer .timer-label { color: var(--black-color); }
+.timer-clock {
+    font-family: var(--font-mono);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+.red-timer .timer-clock { color: var(--red-color); }
+.black-timer .timer-clock { color: var(--black-color); }
+.timer-clock.low-time { color: #c04040; animation: pulse 1s ease-in-out infinite; }
+
+.config-side.timer { border-color: #5a8a5a; background: rgba(90,138,90,0.03); }
+.config-side.timer h3 { color: #5a8a5a; }
+.timer-dot { background: #5a8a5a; }
+
 /* Board controls */
 #board-controls {
     margin-top: 8px;
