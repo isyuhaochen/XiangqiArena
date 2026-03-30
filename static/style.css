@@ -72,7 +72,7 @@ body {
     display: flex;
     gap: 16px;
     padding: 16px;
-    align-items: stretch;
+    align-items: flex-start;
     max-width: 1200px;
     margin: 0 auto;
     min-height: 0;

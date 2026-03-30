@@ -465,6 +465,130 @@ def _broadcast_timer(game: GameSession):
     })
 
 
+def _remaining_turn_time(game: GameSession, side: str) -> Optional[float]:
+    """Return remaining wall-clock seconds for the current turn."""
+    if not game.timer_config or not game.timer_config.enabled:
+        return None
+
+    remaining = game.timer_red if side == 'w' else game.timer_black
+    elapsed = max(0.0, time.time() - game.timer_turn_start)
+    return max(0.0, remaining - elapsed)
+
+
+def _finish_game_on_timeout(game: GameSession, side: str, side_name: str):
+    winner = "black" if side == 'w' else "red"
+    if side == 'w':
+        game.timer_red = 0
+    else:
+        game.timer_black = 0
+    _broadcast_timer(game)
+    _finish_game(game, winner, f"{side_name} ran out of time (超时判负)")
+
+
+async def _run_with_turn_timeout(
+    game: GameSession,
+    side: str,
+    side_name: str,
+    action,
+):
+    """Run one turn action with a hard deadline based on the game clock."""
+    remaining = _remaining_turn_time(game, side)
+    if remaining is None:
+        return await action
+    if remaining <= 0:
+        _finish_game_on_timeout(game, side, side_name)
+        return None
+
+    try:
+        return await asyncio.wait_for(action, timeout=remaining)
+    except asyncio.TimeoutError:
+        _finish_game_on_timeout(game, side, side_name)
+        return None
+
+
+async def _wait_for_human_move(game: GameSession, side_name: str) -> Optional[str]:
+    game.human_move_event.clear()
+    game.human_move = None
+    game.broadcast("waiting_human", {"side": side_name})
+    await game.human_move_event.wait()
+    return game.human_move
+
+
+async def _choose_random_move(game: GameSession, side_name: str) -> Optional[str]:
+    await asyncio.sleep(0.3)  # Small delay for visual effect
+    legal_moves = game.board.get_legal_moves()
+    if not legal_moves:
+        return None
+    move_iccs = random.choice(legal_moves)
+    game.broadcast("thinking", {"side": side_name, "content": f"Random move: {move_iccs}"})
+    return move_iccs
+
+
+async def _request_llm_move(game: GameSession, side: str, side_name: str, config: PlayerConfig) -> Optional[str]:
+    player = LLMPlayer(
+        api_base=config.api_base,
+        api_key=config.api_key,
+        model=config.model,
+        prompt_name=_resolved_prompt_name(config),
+        enable_thinking=True if config.enable_thinking is None else config.enable_thinking,
+        max_completion_tokens=_resolved_max_completion_tokens(config),
+    )
+
+    async for event in player.request_move(game.board, side):
+        if game.status != "playing":
+            return None
+
+        if event["type"] == "reasoning":
+            game.broadcast("reasoning", {"side": side_name, "content": event["content"]})
+        elif event["type"] == "thinking":
+            game.broadcast("thinking", {"side": side_name, "content": event["content"]})
+        elif event["type"] == "tool_call":
+            game.broadcast("tool_call", {
+                "side": side_name,
+                "tool": event["name"],
+                "args": event.get("args", {}),
+            })
+        elif event["type"] == "tool_result":
+            game.broadcast("tool_result", {
+                "side": side_name,
+                "tool": event["name"],
+                "result": event["result"],
+            })
+        elif event["type"] == "move":
+            return event["move"]
+        elif event["type"] == "error":
+            _finish_game(game, "black" if side == 'w' else "red", f"{side_name} error: {event['message']}")
+            return None
+
+    return None
+
+
+async def _request_pikafish_move(game: GameSession, side_name: str, config: PlayerConfig) -> Optional[str]:
+    player_engine = await _get_player_engine(game, side_name, config)
+    mode = _resolved_player_engine_mode(config)
+    limit_text = (
+        f"movetime={_resolved_player_engine_movetime(config)}ms"
+        if mode == "movetime"
+        else f"depth={_resolved_player_engine_depth(config)}"
+    )
+    game.broadcast(
+        "thinking",
+        {
+            "side": side_name,
+            "content": (
+                f"Pikafish ({os.path.basename(_resolved_player_engine_path(config))}) "
+                f"[{_display_player_engine_path(config)}] "
+                f"analyzing, {limit_text}"
+            ),
+        },
+    )
+
+    move_iccs = await player_engine.bestmove(game.board.to_fen())
+    if move_iccs:
+        game.broadcast("thinking", {"side": side_name, "content": f"Pikafish move: {move_iccs}"})
+    return move_iccs
+
+
 # --- Pikafish evaluation helper ---
 
 async def _pikafish_evaluate(game: GameSession, fen: str, move_number: int):
@@ -658,136 +782,41 @@ async def _game_loop_inner(game: GameSession):
         latest_move_record = None
 
         try:
+            move_iccs = None
             if config.type == "human":
-                # Wait for human input
-                game.human_move_event.clear()
-                game.human_move = None
-                game.broadcast("waiting_human", {"side": side_name})
-
-                # Wait with periodic check for game status changes and timer
-                while not game.human_move_event.is_set():
-                    try:
-                        await asyncio.wait_for(game.human_move_event.wait(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        if game.status != "playing":
-                            return
-                        # Check timer timeout
-                        if game.timer_config and game.timer_config.enabled:
-                            elapsed = time.time() - game.timer_turn_start
-                            remaining = (game.timer_red if side == 'w' else game.timer_black) - elapsed
-                            if remaining <= 0:
-                                winner = "black" if side == 'w' else "red"
-                                if side == 'w':
-                                    game.timer_red = 0
-                                else:
-                                    game.timer_black = 0
-                                _broadcast_timer(game)
-                                _finish_game(game, winner, f"{side_name} ran out of time (超时判负)")
-                                return
-                        continue
-
-                if game.status != "playing":
-                    return
-
-                move_iccs = game.human_move
-                if move_iccs:
-                    result = game.board.make_move(move_iccs)
-                    move_number += 1
-                    move_record = _build_move_record(move_number, side_name, result)
-                    game.move_history.append(move_record)
-                    game.broadcast("move", move_record)
-                    latest_move_record = move_record
-                    move_made = True
+                move_iccs = await _run_with_turn_timeout(
+                    game, side, side_name, _wait_for_human_move(game, side_name)
+                )
 
             elif config.type == "random":
-                # Random move from legal moves
-                await asyncio.sleep(0.3)  # Small delay for visual effect
-                legal_moves = game.board.get_legal_moves()
-                if legal_moves:
-                    move_iccs = random.choice(legal_moves)
-                    game.broadcast("thinking", {"side": side_name, "content": f"Random move: {move_iccs}"})
-                    result = game.board.make_move(move_iccs)
-                    move_number += 1
-                    move_record = _build_move_record(move_number, side_name, result)
-                    game.move_history.append(move_record)
-                    game.broadcast("move", move_record)
-                    latest_move_record = move_record
-                    move_made = True
+                move_iccs = await _run_with_turn_timeout(
+                    game, side, side_name, _choose_random_move(game, side_name)
+                )
 
             elif config.type == "llm":
-                player = LLMPlayer(
-                    api_base=config.api_base,
-                    api_key=config.api_key,
-                    model=config.model,
-                    prompt_name=_resolved_prompt_name(config),
-                    enable_thinking=True if config.enable_thinking is None else config.enable_thinking,
-                    max_completion_tokens=_resolved_max_completion_tokens(config),
+                move_iccs = await _run_with_turn_timeout(
+                    game, side, side_name, _request_llm_move(game, side, side_name, config)
                 )
-
-                async for event in player.request_move(game.board, side):
-                    if game.status != "playing":
-                        return
-
-                    if event["type"] == "reasoning":
-                        game.broadcast("reasoning", {"side": side_name, "content": event["content"]})
-                    elif event["type"] == "thinking":
-                        game.broadcast("thinking", {"side": side_name, "content": event["content"]})
-                    elif event["type"] == "tool_call":
-                        game.broadcast("tool_call", {
-                            "side": side_name,
-                            "tool": event["name"],
-                            "args": event.get("args", {}),
-                        })
-                    elif event["type"] == "tool_result":
-                        game.broadcast("tool_result", {
-                            "side": side_name,
-                            "tool": event["name"],
-                            "result": event["result"],
-                        })
-                    elif event["type"] == "move":
-                        move_iccs = event["move"]
-                        try:
-                            result = game.board.make_move(move_iccs)
-                            move_number += 1
-                            move_record = _build_move_record(move_number, side_name, result)
-                            game.move_history.append(move_record)
-                            game.broadcast("move", move_record)
-                            latest_move_record = move_record
-                            move_made = True
-                        except ValueError as e:
-                            _finish_game(game, "black" if side == 'w' else "red", f"Invalid move by {side_name}: {e}")
-                            return
-                    elif event["type"] == "error":
-                        _finish_game(game, "black" if side == 'w' else "red", f"{side_name} error: {event['message']}")
-                        return
 
             elif config.type == "pikafish":
-                player_engine = await _get_player_engine(game, side_name, config)
-                mode = _resolved_player_engine_mode(config)
-                limit_text = (
-                    f"movetime={_resolved_player_engine_movetime(config)}ms"
-                    if mode == "movetime"
-                    else f"depth={_resolved_player_engine_depth(config)}"
+                move_iccs = await _run_with_turn_timeout(
+                    game, side, side_name, _request_pikafish_move(game, side_name, config)
                 )
-                game.broadcast(
-                    "thinking",
-                    {
-                        "side": side_name,
-                        "content": (
-                            f"Pikafish ({os.path.basename(_resolved_player_engine_path(config))}) "
-                            f"[{_display_player_engine_path(config)}] "
-                            f"analyzing, {limit_text}"
-                        ),
-                    },
-                )
-
-                move_iccs = await player_engine.bestmove(game.board.to_fen())
+                if game.status != "playing":
+                    return
                 if not move_iccs:
                     _finish_game(game, "black" if side == 'w' else "red", f"{side_name} Pikafish failed to return a move")
                     return
 
-                game.broadcast("thinking", {"side": side_name, "content": f"Pikafish move: {move_iccs}"})
-                result = game.board.make_move(move_iccs)
+            if game.status != "playing":
+                return
+
+            if move_iccs:
+                try:
+                    result = game.board.make_move(move_iccs)
+                except ValueError as e:
+                    _finish_game(game, "black" if side == 'w' else "red", f"Invalid move by {side_name}: {e}")
+                    return
                 move_number += 1
                 move_record = _build_move_record(move_number, side_name, result)
                 game.move_history.append(move_record)
@@ -795,6 +824,8 @@ async def _game_loop_inner(game: GameSession):
                 latest_move_record = move_record
                 move_made = True
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             _finish_game(game, "black" if side == 'w' else "red", f"{side_name} exception: {str(e)[:200]}")
             return

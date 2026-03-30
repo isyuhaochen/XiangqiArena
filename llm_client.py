@@ -3,6 +3,7 @@ LLM client with OpenAI SDK for Xiangqi.
 Supports OpenAI-compatible endpoints via configurable base_url.
 """
 
+import asyncio
 import json
 import re
 
@@ -276,6 +277,8 @@ class LLMPlayer:
                         tool_calls = data
                     elif event_type == "finish_reason":
                         finish_reason = data
+            except asyncio.CancelledError:
+                raise
             except APIStatusError as e:
                 yield {
                     "type": "error",

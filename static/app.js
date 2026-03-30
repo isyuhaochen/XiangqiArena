@@ -25,6 +25,8 @@ let availablePrompts = [];
 let defaultPromptName = 'zh';
 let defaultPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
+let rightColumnSyncScheduled = false;
+let rightColumnSyncTimeoutId = null;
 
 // Timer state
 let timerState = {
@@ -324,7 +326,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    window.addEventListener('resize', syncRightColumnHeight);
+    const mainAreaEl = document.getElementById('main-area');
+    const boardColumnEl = document.getElementById('board-column');
+    const logEl = document.getElementById('game-log');
+    if (logEl && typeof MutationObserver !== 'undefined') {
+        const logObserver = new MutationObserver(() => {
+            scheduleRightColumnHeightSync();
+        });
+        logObserver.observe(logEl, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
+    }
+
+    if (typeof ResizeObserver !== 'undefined') {
+        const layoutObserver = new ResizeObserver(() => {
+            scheduleRightColumnHeightSync();
+        });
+        if (mainAreaEl) layoutObserver.observe(mainAreaEl);
+        if (boardColumnEl) layoutObserver.observe(boardColumnEl);
+    }
+
+    window.addEventListener('resize', () => {
+        scheduleRightColumnHeightSync();
+        scheduleRightColumnHeightSync(120);
+    });
 
     // Init eval chart tooltip
     _initEvalChartTooltip();
@@ -884,7 +911,7 @@ function updateUI() {
     inputs.forEach(inp => { inp.disabled = isPlaying || isPaused; });
 
     updateTurnIndicator();
-    requestAnimationFrame(syncRightColumnHeight);
+    scheduleRightColumnHeightSync();
 }
 
 function updateTurnIndicator() {
@@ -908,6 +935,26 @@ function updateTurnIndicator() {
 
 function setStatus(msg) {
     document.getElementById('status-bar').textContent = msg;
+}
+
+function scheduleRightColumnHeightSync(delayMs = 0) {
+    if (delayMs > 0) {
+        if (rightColumnSyncTimeoutId) {
+            clearTimeout(rightColumnSyncTimeoutId);
+        }
+        rightColumnSyncTimeoutId = setTimeout(() => {
+            rightColumnSyncTimeoutId = null;
+            scheduleRightColumnHeightSync();
+        }, delayMs);
+        return;
+    }
+
+    if (rightColumnSyncScheduled) return;
+    rightColumnSyncScheduled = true;
+    requestAnimationFrame(() => {
+        rightColumnSyncScheduled = false;
+        syncRightColumnHeight();
+    });
 }
 
 function syncRightColumnHeight() {

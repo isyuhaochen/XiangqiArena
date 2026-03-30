@@ -45,12 +45,14 @@ class BoardRenderer {
         const w = this.leftPad + this.rightPad + cellSize * 8;
         const h = this.topPad + this.bottomPad + cellSize * 9;
 
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = w * dpr;
-        canvas.height = h * dpr;
+        this.dpr = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+        canvas.width = w * this.dpr;
+        canvas.height = h * this.dpr;
         canvas.style.width = w + 'px';
         canvas.style.height = h + 'px';
-        this.ctx.scale(dpr, dpr);
+        canvas.style.imageRendering = 'auto';
+        this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        this.ctx.imageSmoothingEnabled = true;
         this.width = w;
         this.height = h;
 
@@ -237,7 +239,7 @@ class BoardRenderer {
     drawGrid() {
         const ctx = this.ctx;
         ctx.strokeStyle = BOARD_COLORS.line;
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1.5;
         for (let row = 0; row <= 9; row++) {
             const { x: x0, y } = this.toPixel(0, row);
             const { x: x1 } = this.toPixel(8, row);
@@ -262,7 +264,7 @@ class BoardRenderer {
     drawPalace() {
         const ctx = this.ctx;
         ctx.strokeStyle = BOARD_COLORS.line;
-        ctx.lineWidth = 1.0;
+        ctx.lineWidth = 1.25;
         let p1 = this.toPixel(3, 0), p2 = this.toPixel(5, 2);
         ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
         p1 = this.toPixel(5, 0); p2 = this.toPixel(3, 2);
@@ -277,7 +279,7 @@ class BoardRenderer {
         const ctx = this.ctx;
         const s = 5, g = 3;
         ctx.strokeStyle = BOARD_COLORS.line;
-        ctx.lineWidth = 1.0;
+        ctx.lineWidth = 1.2;
         for (const [col, row] of MARKER_POSITIONS) {
             const { x, y } = this.toPixel(col, row);
             const dirs = [];
@@ -367,20 +369,23 @@ class BoardRenderer {
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.2;
         ctx.stroke();
 
         ctx.beginPath();
         ctx.arc(x, y, r - 4, 0, Math.PI * 2);
         ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 1.2;
         ctx.stroke();
 
         const charName = PIECE_CHARS[piece] || piece;
         ctx.font = `bold ${r * 1.2}px "KaiTi", "STKaiti", "楷体", "SimSun", serif`;
         ctx.fillStyle = textColor;
+        ctx.lineWidth = 0.9;
+        ctx.strokeStyle = 'rgba(255, 248, 236, 0.9)';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        ctx.strokeText(charName, x, y + 1);
         ctx.fillText(charName, x, y + 1);
     }
 }
