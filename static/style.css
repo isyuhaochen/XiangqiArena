@@ -133,6 +133,11 @@ body {
 .timer-side.red-timer { border-color: var(--red-color); }
 .timer-side.black-timer { border-color: var(--black-color); }
 .timer-side.active { background: rgba(192,120,48,0.08); }
+.timer-side.inactive {
+    background: rgba(250, 245, 235, 0.7);
+    border-style: dashed;
+    opacity: 0.72;
+}
 .timer-label {
     font-size: 12px;
     font-weight: 600;
@@ -148,6 +153,10 @@ body {
 }
 .red-timer .timer-clock { color: var(--red-color); }
 .black-timer .timer-clock { color: var(--black-color); }
+.timer-clock.placeholder {
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+}
 .timer-clock.low-time { color: #c04040; animation: pulse 1s ease-in-out infinite; }
 
 .config-side.timer { border-color: #5a8a5a; background: rgba(90,138,90,0.03); }

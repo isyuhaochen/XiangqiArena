@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BattleChess - Xiangqi Arena</title>
     <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
-    <link rel="stylesheet" href="/static/style.css?v=20260330-01">
+    <link rel="stylesheet" href="/static/style.css?v=20260330-02">
 </head>
 <body>
     <header id="header">
@@ -23,14 +23,14 @@
         <!-- Left: Board + Controls -->
         <div id="board-column">
             <canvas id="board-canvas"></canvas>
-            <div id="timer-bar" class="hidden">
+            <div id="timer-bar">
                 <div class="timer-side red-timer">
                     <span class="timer-label">Red (红方)</span>
-                    <span class="timer-clock" id="timer-red">30:00</span>
+                    <span class="timer-clock placeholder" id="timer-red">---</span>
                 </div>
                 <div class="timer-side black-timer">
                     <span class="timer-label">Black (黑方)</span>
-                    <span class="timer-clock" id="timer-black">30:00</span>
+                    <span class="timer-clock placeholder" id="timer-black">---</span>
                 </div>
             </div>
             <div id="turn-indicator">Ready to start</div>
@@ -261,6 +261,6 @@
     </div>
 
     <script src="/static/board.js?v=20260330-01"></script>
-    <script src="/static/app.js?v=20260330-01"></script>
+    <script src="/static/app.js?v=20260330-02"></script>
 </body>
 </html>

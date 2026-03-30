@@ -4,6 +4,8 @@
  */
 
 const DEFAULT_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w';
+const TIMER_PLACEHOLDER = '---';
+const DEFAULT_TIMER_INITIAL_SECONDS = 30 * 60;
 
 const state = {
     gameId: null,
@@ -27,12 +29,43 @@ let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 // Timer state
 let timerState = {
     enabled: false,
-    redTime: 0,
-    blackTime: 0,
+    redTime: null,
+    blackTime: null,
     activeSide: null, // 'w' or 'b'
     lastSync: 0,      // time of last server sync
     intervalId: null,
 };
+
+function getConfiguredTimerInitialTime() {
+    const timerInitialEl = document.getElementById('timer-initial');
+    const minutes = timerInitialEl ? parseInt(timerInitialEl.value, 10) : NaN;
+    const safeMinutes = Number.isFinite(minutes) && minutes > 0
+        ? minutes
+        : (DEFAULT_TIMER_INITIAL_SECONDS / 60);
+    return safeMinutes * 60;
+}
+
+function syncTimerPreviewFromSettings() {
+    if (state.status !== 'waiting') return;
+
+    stopTimerInterval();
+    timerState.activeSide = null;
+    timerState.lastSync = 0;
+
+    const timerEnabledEl = document.getElementById('timer-enabled');
+    if (timerEnabledEl && timerEnabledEl.checked) {
+        const initialTime = getConfiguredTimerInitialTime();
+        timerState.enabled = true;
+        timerState.redTime = initialTime;
+        timerState.blackTime = initialTime;
+    } else {
+        timerState.enabled = false;
+        timerState.redTime = null;
+        timerState.blackTime = null;
+    }
+
+    updateTimerDisplay();
+}
 
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -113,6 +146,9 @@ function applyDefaultPikafishPaths() {
 }
 
 function formatTimerDisplay(seconds) {
+    if (seconds == null || !Number.isFinite(seconds)) {
+        return TIMER_PLACEHOLDER;
+    }
     if (seconds < 0) seconds = 0;
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
@@ -123,12 +159,14 @@ function updateTimerDisplay() {
     const redEl = document.getElementById('timer-red');
     const blackEl = document.getElementById('timer-black');
     if (!redEl || !blackEl) return;
+    const redSide = redEl.closest('.timer-side');
+    const blackSide = blackEl.closest('.timer-side');
 
-    let redTime = timerState.redTime;
-    let blackTime = timerState.blackTime;
+    let redTime = timerState.enabled ? timerState.redTime : null;
+    let blackTime = timerState.enabled ? timerState.blackTime : null;
 
     // Subtract elapsed time for the active side
-    if (timerState.activeSide && timerState.lastSync > 0) {
+    if (timerState.enabled && timerState.activeSide && timerState.lastSync > 0) {
         const elapsed = (Date.now() - timerState.lastSync) / 1000;
         if (timerState.activeSide === 'w') {
             redTime = Math.max(0, redTime - elapsed);
@@ -137,16 +175,27 @@ function updateTimerDisplay() {
         }
     }
 
+    const redIsPlaceholder = redTime == null || !Number.isFinite(redTime);
+    const blackIsPlaceholder = blackTime == null || !Number.isFinite(blackTime);
+
     redEl.textContent = formatTimerDisplay(redTime);
     blackEl.textContent = formatTimerDisplay(blackTime);
+    redEl.classList.toggle('placeholder', redIsPlaceholder);
+    blackEl.classList.toggle('placeholder', blackIsPlaceholder);
 
     // Low time warning (< 60 seconds)
-    redEl.classList.toggle('low-time', redTime < 60 && redTime > 0);
-    blackEl.classList.toggle('low-time', blackTime < 60 && blackTime > 0);
+    redEl.classList.toggle('low-time', !redIsPlaceholder && redTime < 60 && redTime > 0);
+    blackEl.classList.toggle('low-time', !blackIsPlaceholder && blackTime < 60 && blackTime > 0);
 
     // Highlight active side
-    redEl.closest('.timer-side').classList.toggle('active', timerState.activeSide === 'w');
-    blackEl.closest('.timer-side').classList.toggle('active', timerState.activeSide === 'b');
+    if (redSide) {
+        redSide.classList.toggle('active', timerState.enabled && timerState.activeSide === 'w');
+        redSide.classList.toggle('inactive', redIsPlaceholder);
+    }
+    if (blackSide) {
+        blackSide.classList.toggle('active', timerState.enabled && timerState.activeSide === 'b');
+        blackSide.classList.toggle('inactive', blackIsPlaceholder);
+    }
 }
 
 function startTimerInterval() {
@@ -164,11 +213,11 @@ function stopTimerInterval() {
 function resetTimerState() {
     stopTimerInterval();
     timerState.enabled = false;
-    timerState.redTime = 0;
-    timerState.blackTime = 0;
+    timerState.redTime = null;
+    timerState.blackTime = null;
     timerState.activeSide = null;
     timerState.lastSync = 0;
-    document.getElementById('timer-bar').classList.add('hidden');
+    updateTimerDisplay();
 }
 
 // --- Initialization ---
@@ -254,9 +303,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Timer settings toggle
     const timerEnabled = document.getElementById('timer-enabled');
     const timerOptions = document.getElementById('timer-options');
+    const timerInitial = document.getElementById('timer-initial');
     timerEnabled.addEventListener('change', () => {
         timerOptions.style.display = timerEnabled.checked ? '' : 'none';
+        syncTimerPreviewFromSettings();
     });
+    timerInitial.addEventListener('input', syncTimerPreviewFromSettings);
+    timerInitial.addEventListener('change', syncTimerPreviewFromSettings);
     timerEnabled.dispatchEvent(new Event('change'));
 
     // Board click-to-move callbacks
@@ -435,7 +488,7 @@ async function onStart() {
         const timerEnabledChecked = document.getElementById('timer-enabled').checked;
         const timerConfig = {
             enabled: timerEnabledChecked,
-            initial_time: timerEnabledChecked ? parseInt(document.getElementById('timer-initial').value) * 60 : 1800,
+            initial_time: timerEnabledChecked ? getConfiguredTimerInitialTime() : DEFAULT_TIMER_INITIAL_SECONDS,
             increment: timerEnabledChecked ? parseInt(document.getElementById('timer-increment').value) : 10,
         };
         const { game_id } = await apiPost('/api/game/create', {
@@ -465,7 +518,6 @@ async function onStart() {
             timerState.blackTime = timerConfig.initial_time;
             timerState.activeSide = null;
             timerState.lastSync = 0;
-            document.getElementById('timer-bar').classList.remove('hidden');
             updateTimerDisplay();
         } else {
             resetTimerState();
@@ -494,7 +546,6 @@ function closeGameStream() {
 
 function enterReadyState(fen, statusMessage = 'Ready') {
     closeGameStream();
-    resetTimerState();
     state.gameId = null;
     state.status = 'waiting';
     state.moveHistory = [];
@@ -502,6 +553,7 @@ function enterReadyState(fen, statusMessage = 'Ready') {
     state.viewIndex = -1;
     state.fen = fen;
     state.turn = fen.split(' ')[1] || 'w';
+    syncTimerPreviewFromSettings();
 
     clearGameLog();
     renderer.clearSelection();
