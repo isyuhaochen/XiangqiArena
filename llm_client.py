@@ -9,6 +9,7 @@ import re
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
+from adapters import get_adapter
 from prompt_registry import get_prompt_profile
 from xiangqi import Board, PIECE_NAMES_ZH
 
@@ -101,18 +102,6 @@ def _tool_retry_prompt(board: Board, side: str, prompt_name: str | None = None) 
     return prompt_profile["tool_retry_prompt"].format(**params)
 
 
-def _supports_thinking_control(api_base: str, model: str) -> bool:
-    api_base_lower = (api_base or "").lower()
-    model_lower = (model or "").lower()
-    return "xf-yun.com" in api_base_lower or model_lower.startswith("spark")
-
-
-def _extra_body_for_provider(api_base: str, model: str, enable_thinking: bool) -> dict | None:
-    if _supports_thinking_control(api_base, model):
-        return {"thinking": {"type": "enabled" if enable_thinking else "disabled"}}
-    return None
-
-
 def execute_tool(board: Board, tool_name: str, args: dict) -> str:
     """Execute a tool call against the board and return the result string."""
     if tool_name == "make_move":
@@ -150,6 +139,7 @@ class LLMPlayer:
         self.prompt_name = prompt_name
         self.enable_thinking = enable_thinking
         self.max_completion_tokens = max_completion_tokens
+        self.adapter = get_adapter(api_base, model)
 
     async def _call_api_stream(self, messages: list, use_tools: bool = True):
         """
@@ -160,6 +150,7 @@ class LLMPlayer:
           ("tool_calls_done", list)
           ("finish_reason", str)
         """
+
         request_args = {
             "model": self.model,
             "messages": messages,
@@ -168,11 +159,12 @@ class LLMPlayer:
         }
         if use_tools:
             request_args["tools"] = TOOL_DEFINITIONS
-            request_args["tool_choice"] = "auto"
+            request_args["tool_choice"] = "auto" if self.enable_thinking else "required"
 
-        extra_body = _extra_body_for_provider(self.api_base, self.model, self.enable_thinking)
+        extra_body = self.adapter.extra_body(self.enable_thinking)
         if extra_body:
             request_args["extra_body"] = extra_body
+        request_args = self.adapter.patch_request_args(request_args)
 
         accumulated_content = ""
         tool_calls_acc = {}
@@ -198,8 +190,7 @@ class LLMPlayer:
                 if fr:
                     finish_reason = fr
 
-                model_extra = getattr(delta, "model_extra", None) or {}
-                reasoning_piece = getattr(delta, "reasoning_content", None) or model_extra.get("reasoning_content")
+                reasoning_piece = self.adapter.extract_reasoning(delta)
                 if reasoning_piece:
                     yield ("reasoning_delta", reasoning_piece)
 

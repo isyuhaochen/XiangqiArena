@@ -6,8 +6,7 @@
 
 BattleChess 是一个本地运行的中国象棋 Arena，支持 `Human / Random / LLM / Pikafish` 任意两两对局。
 
-前端使用原生 HTML / CSS / JavaScript 与 Canvas，后端使用 FastAPI。LLM 调用统一走 OpenAI Python SDK。当前版本也支持将 `Pikafish` 直接作为红方或黑方参与对战，并且可以与 Human、Random、LLM 或另一个 Pikafish 自由组合对局。
-
+前端使用原生 HTML / CSS / JavaScript 与 Canvas，后端使用 FastAPI。LLM 调用统一走 OpenAI Python SDK。
 ## 界面预览
 
 ![BattleChess UI Preview](example/example.png)
@@ -70,75 +69,6 @@ models:
     enable_thinking: true
     max_completion_tokens: 8192
 ```
-
-字段说明：
-
-- `pikafish.eval_engine_path`：评估区默认使用的 Pikafish 路径。只影响“引擎分析/评估”，不影响参与方玩家。
-- `models[].api_base`：传给 OpenAI SDK 的 `base_url`
-- `models[].api_key`：模型服务商提供的密钥
-- `models[].model`：具体模型名
-- `models[].prompt_name`：对应 `prompts/` 目录中的 Prompt 文件名
-- `models[].enable_thinking`：是否启用思考模式
-- `models[].max_completion_tokens`：单次生成的最大 token 数
-
-## Prompt 文件
-
-Prompt 不再写死在代码里，而是放在 `prompts/*.yaml` 中。
-
-当前内置：
-
-- `prompts/zh.yaml`
-- `prompts/en.yaml`
-
-每个 Prompt 文件包含这些字段：
-
-- `system_prompt`
-- `turn_prompt`
-- `tool_retry_prompt`
-- `empty_legal_moves_text`
-
-你可以通过两种方式选择 Prompt：
-
-- 在 `config.yaml` 里为某个预设模型设置 `prompt_name`
-- 在页面设置里为某个 LLM 玩家选择 Prompt
-
-## 页面使用
-
-1. 在右侧 `Settings` 页选择红黑双方的玩家类型
-2. 如果选择 `LLM`：
-   - 可以选预设模型
-   - 也可以使用自定义 `API Base URL / API Key / Model`
-3. 如果选择 `Pikafish`：
-   - 为该方填写自己的 `Pikafish Path`
-   - 选择该方的 `Mode / Think Time / Depth`
-4. 如需评估，配置右侧 `Pikafish (引擎分析)` 的勾选状态、路径和参数
-5. 输入 FEN，或者直接点击 `Init`
-6. 点击 `Start`
-7. 对局开始后会自动切换到 `记录` 页
-8. 可以在暂停状态下回看历史局面，并从当前回看到的位置继续对局
-
-## 日志保存
-
-每局结束后，系统会在 `logs/` 下保存一个独立日志文件，文件名类似：
-
-```text
-red-Human_vs_black-Pikafish-pikafish-avx2_20260327-180000_ab12cd34.log
-```
-
-日志内容包括：
-
-- 对局基本信息
-- 双方玩家配置
-- 初始 FEN 与终局 FEN
-- 完整走法序列
-- 详细事件日志
-
-如果玩家类型是 Pikafish，日志里也会记录：
-
-- `engine_path`
-- `engine_mode`
-- `engine_movetime`
-- `engine_depth`
 
 ## 项目结构
 

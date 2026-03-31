@@ -22,3 +22,5 @@ logs/
 __pycache__
 logs
 bug.txt
+adapters/claude_opus_template.json
+adapters/claude_api.py
