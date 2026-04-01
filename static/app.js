@@ -1,28 +1,59 @@
 /**
  * BattleChess Application Controller
  * Manages game state, API communication, SSE streaming, and UI updates.
+ * Supports multiple concurrent games via gameStates Map.
  */
 
 const DEFAULT_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w';
 const TIMER_PLACEHOLDER = '---';
 const DEFAULT_TIMER_INITIAL_SECONDS = 30 * 60;
 
-const state = {
-    gameId: null,
-    fen: DEFAULT_FEN,
-    status: 'waiting', // waiting | playing | paused | finished
-    turn: 'w',
-    moveHistory: [],
-    lastMove: null,
-    eventSource: null,
-    viewIndex: -1, // -1 = live view, otherwise index into moveHistory for back/forward
-    scoreType: 'Elo',
-    // History replay
-    historyMode: false,
-    historyGame: null,
-    historyViewIndex: -1, // 0 = initial position, 1..N = after move N
-    historyAutoplayTimer: null,
-};
+// --- Multi-game state ---
+const gameStates = new Map(); // gameId → game state object
+let activeGameId = null;
+
+// History replay (global, not per-game)
+let historyMode = false;
+let historyGame = null;
+let historyViewIndex = -1;
+let historyAutoplayTimer = null;
+
+function createGameState(gameId, config = {}) {
+    return {
+        gameId,
+        fen: config.fen || DEFAULT_FEN,
+        status: 'waiting', // waiting | playing | paused | finished
+        turn: 'w',
+        moveHistory: [],
+        lastMove: null,
+        eventSource: null,
+        viewIndex: -1,
+        scoreType: 'Elo',
+        // Labels for tab display
+        redLabel: config.redLabel || 'Red',
+        blackLabel: config.blackLabel || 'Black',
+        // Per-game log HTML (saved when switching away)
+        logHTML: '',
+        // Per-game log state
+        currentLogEntry: null,
+        currentLogContent: null,
+        currentStreamEl: null,
+        currentStreamCls: null,
+        // Per-game timer
+        timer: {
+            enabled: false,
+            redTime: null,
+            blackTime: null,
+            activeSide: null,
+            lastSync: 0,
+            intervalId: null,
+        },
+    };
+}
+
+function activeGame() {
+    return gameStates.get(activeGameId) || null;
+}
 
 let renderer = null;
 const presetConfigs = {};
@@ -32,16 +63,6 @@ let defaultPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 let rightColumnSyncScheduled = false;
 let rightColumnSyncTimeoutId = null;
-
-// Timer state
-let timerState = {
-    enabled: false,
-    redTime: null,
-    blackTime: null,
-    activeSide: null, // 'w' or 'b'
-    lastSync: 0,      // time of last server sync
-    intervalId: null,
-};
 
 function getConfiguredTimerInitialTime() {
     const timerInitialEl = document.getElementById('timer-initial');
@@ -53,25 +74,27 @@ function getConfiguredTimerInitialTime() {
 }
 
 function syncTimerPreviewFromSettings() {
-    if (state.status !== 'waiting') return;
+    const g = activeGame();
+    if (g && g.status !== 'waiting') return;
 
-    stopTimerInterval();
-    timerState.activeSide = null;
-    timerState.lastSync = 0;
-
+    // If no active game, just update the display with settings preview
     const timerEnabledEl = document.getElementById('timer-enabled');
+    const redEl = document.getElementById('timer-red');
+    const blackEl = document.getElementById('timer-black');
+    if (!redEl || !blackEl) return;
+
     if (timerEnabledEl && timerEnabledEl.checked) {
         const initialTime = getConfiguredTimerInitialTime();
-        timerState.enabled = true;
-        timerState.redTime = initialTime;
-        timerState.blackTime = initialTime;
+        redEl.textContent = formatTimerDisplay(initialTime);
+        blackEl.textContent = formatTimerDisplay(initialTime);
+        redEl.classList.remove('placeholder');
+        blackEl.classList.remove('placeholder');
     } else {
-        timerState.enabled = false;
-        timerState.redTime = null;
-        timerState.blackTime = null;
+        redEl.textContent = TIMER_PLACEHOLDER;
+        blackEl.textContent = TIMER_PLACEHOLDER;
+        redEl.classList.add('placeholder');
+        blackEl.classList.add('placeholder');
     }
-
-    updateTimerDisplay();
 }
 
 function switchTab(tabName) {
@@ -83,7 +106,7 @@ function switchTab(tabName) {
     });
     if (tabName === 'history') {
         loadHistoryList();
-    } else if (state.historyMode) {
+    } else if (historyMode) {
         closeHistoryDetail();
     } else {
         stopHistoryAutoplay();
@@ -176,13 +199,34 @@ function updateTimerDisplay() {
     const redSide = redEl.closest('.timer-side');
     const blackSide = blackEl.closest('.timer-side');
 
-    let redTime = timerState.enabled ? timerState.redTime : null;
-    let blackTime = timerState.enabled ? timerState.blackTime : null;
+    const g = activeGame();
+    if (!g || !g.timer.enabled) {
+        // Show placeholder if no active game or timer disabled
+        const timerEnabledEl = document.getElementById('timer-enabled');
+        if (!g && timerEnabledEl && timerEnabledEl.checked) {
+            // No game, show settings preview
+            return;
+        }
+        if (g && !g.timer.enabled) {
+            redEl.textContent = TIMER_PLACEHOLDER;
+            blackEl.textContent = TIMER_PLACEHOLDER;
+            redEl.classList.add('placeholder');
+            blackEl.classList.add('placeholder');
+            if (redSide) { redSide.classList.remove('active'); redSide.classList.add('inactive'); }
+            if (blackSide) { blackSide.classList.remove('active'); blackSide.classList.add('inactive'); }
+            return;
+        }
+        return;
+    }
+
+    const t = g.timer;
+    let redTime = t.redTime;
+    let blackTime = t.blackTime;
 
     // Subtract elapsed time for the active side
-    if (timerState.enabled && timerState.activeSide && timerState.lastSync > 0) {
-        const elapsed = (Date.now() - timerState.lastSync) / 1000;
-        if (timerState.activeSide === 'w') {
+    if (t.activeSide && t.lastSync > 0) {
+        const elapsed = (Date.now() - t.lastSync) / 1000;
+        if (t.activeSide === 'w') {
             redTime = Math.max(0, redTime - elapsed);
         } else {
             blackTime = Math.max(0, blackTime - elapsed);
@@ -203,35 +247,125 @@ function updateTimerDisplay() {
 
     // Highlight active side
     if (redSide) {
-        redSide.classList.toggle('active', timerState.enabled && timerState.activeSide === 'w');
+        redSide.classList.toggle('active', t.activeSide === 'w');
         redSide.classList.toggle('inactive', redIsPlaceholder);
     }
     if (blackSide) {
-        blackSide.classList.toggle('active', timerState.enabled && timerState.activeSide === 'b');
+        blackSide.classList.toggle('active', t.activeSide === 'b');
         blackSide.classList.toggle('inactive', blackIsPlaceholder);
     }
 }
 
-function startTimerInterval() {
-    stopTimerInterval();
-    timerState.intervalId = setInterval(updateTimerDisplay, 200);
+function startTimerInterval(g) {
+    stopTimerInterval(g);
+    g.timer.intervalId = setInterval(() => {
+        if (activeGameId === g.gameId) updateTimerDisplay();
+    }, 200);
 }
 
-function stopTimerInterval() {
-    if (timerState.intervalId) {
-        clearInterval(timerState.intervalId);
-        timerState.intervalId = null;
+function stopTimerInterval(g) {
+    if (!g) return;
+    if (g.timer.intervalId) {
+        clearInterval(g.timer.intervalId);
+        g.timer.intervalId = null;
     }
 }
 
-function resetTimerState() {
-    stopTimerInterval();
-    timerState.enabled = false;
-    timerState.redTime = null;
-    timerState.blackTime = null;
-    timerState.activeSide = null;
-    timerState.lastSync = 0;
+function resetTimerState(g) {
+    if (!g) return;
+    stopTimerInterval(g);
+    g.timer.enabled = false;
+    g.timer.redTime = null;
+    g.timer.blackTime = null;
+    g.timer.activeSide = null;
+    g.timer.lastSync = 0;
+    if (activeGameId === g.gameId) updateTimerDisplay();
+}
+
+// --- Game Tab Management ---
+
+function switchActiveGame(gameId) {
+    if (gameId === activeGameId) return;
+    if (historyMode) closeHistoryDetail();
+
+    // Save current game's log HTML
+    const oldGame = activeGame();
+    if (oldGame) {
+        oldGame.logHTML = document.getElementById('game-log').innerHTML;
+        oldGame.currentLogEntry = _currentLogEntry;
+        oldGame.currentLogContent = _currentLogContent;
+        oldGame.currentStreamEl = _currentStreamEl;
+        oldGame.currentStreamCls = _currentStreamCls;
+    }
+
+    activeGameId = gameId;
+    const g = activeGame();
+    if (!g) return;
+
+    // Restore log
+    document.getElementById('game-log').innerHTML = g.logHTML;
+    _currentLogEntry = g.currentLogEntry;
+    _currentLogContent = g.currentLogContent;
+    _currentStreamEl = g.currentStreamEl;
+    _currentStreamCls = g.currentStreamCls;
+
+    // Restore board
+    renderer.clearSelection();
+    if (g.viewIndex === -1) {
+        renderer.render(g.fen, g.lastMove);
+    } else if (g.viewIndex === 0) {
+        renderer.render(g.fen); // initial
+    } else {
+        const entry = g.moveHistory[g.viewIndex - 1];
+        if (entry) renderer.render(entry.fen, entry.move);
+    }
+
+    // Restore timer display
     updateTimerDisplay();
+
+    // Restore eval chart
+    drawEvalChart();
+
+    updateUI();
+    updateTurnIndicator();
+    updateHumanInteractive();
+}
+
+function closeGameTab(gameId) {
+    const g = gameStates.get(gameId);
+    if (!g) return;
+
+    // Close SSE
+    if (g.eventSource) {
+        g.eventSource.close();
+        g.eventSource = null;
+    }
+    stopTimerInterval(g);
+
+    // If game is playing/paused, try to reset it on server
+    if (g.status === 'playing' || g.status === 'paused') {
+        apiPost(`/api/game/${gameId}/reset`).catch(() => {});
+    }
+
+    gameStates.delete(gameId);
+
+    if (activeGameId === gameId) {
+        // Switch to another game, or clear
+        const remaining = Array.from(gameStates.keys());
+        if (remaining.length > 0) {
+            activeGameId = null; // force full switch
+            switchActiveGame(remaining[remaining.length - 1]);
+        } else {
+            activeGameId = null;
+            clearGameLog();
+            renderer.clearSelection();
+            renderer.render(DEFAULT_FEN);
+            document.getElementById('fen-input').value = DEFAULT_FEN;
+            hideGameOver();
+            syncTimerPreviewFromSettings();
+            updateUI();
+        }
+    }
 }
 
 // --- Initialization ---
@@ -239,7 +373,7 @@ function resetTimerState() {
 document.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('board-canvas');
     renderer = new BoardRenderer(canvas);
-    renderer.render(state.fen);
+    renderer.render(DEFAULT_FEN);
 
     document.getElementById('fen-input').value = DEFAULT_FEN;
 
@@ -288,7 +422,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Buttons
-    document.getElementById('btn-start').addEventListener('click', onStart);
     document.getElementById('btn-pause').addEventListener('click', onPause);
     document.getElementById('btn-reset').addEventListener('click', onReset);
     document.getElementById('btn-step-back').addEventListener('click', onStepBack);
@@ -296,6 +429,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-init-fen').addEventListener('click', onInitFEN);
     document.getElementById('btn-load-fen').addEventListener('click', onLoadFEN);
     document.getElementById('btn-export-fen').addEventListener('click', onExportFEN);
+    document.getElementById('btn-new-game').addEventListener('click', onNewGame);
+    document.getElementById('btn-leaderboard').addEventListener('click', toggleLeaderboard);
 
     // Pikafish settings toggle
     const pikafishEnabled = document.getElementById('pikafish-enabled');
@@ -328,12 +463,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Board click-to-move callbacks
     renderer.onMoveCallback = (move) => {
-        if (state.gameId && state.status === 'playing') {
+        const g = activeGame();
+        if (g && g.status === 'playing') {
             submitHumanMove(move);
         }
     };
     renderer.onSelectCallback = (col, row) => {
-        if (state.gameId && state.status === 'playing') {
+        const g = activeGame();
+        if (g && g.status === 'playing') {
             fetchLegalMovesForPiece(col, row);
         }
     };
@@ -369,7 +506,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     _initEvalChartTooltip();
 
     // History tab buttons
-    document.getElementById('btn-history-refresh').addEventListener('click', loadHistoryList);
+    document.getElementById('btn-history-refresh').addEventListener('click', (e) => {
+        e.stopPropagation();
+        loadHistoryList();
+    });
     document.getElementById('btn-history-back').addEventListener('click', closeHistoryDetail);
     document.getElementById('btn-hist-first').addEventListener('click', historyGoFirst);
     document.getElementById('btn-hist-prev').addEventListener('click', historyStepPrev);
@@ -379,7 +519,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // History keyboard navigation
     document.addEventListener('keydown', (e) => {
-        if (!state.historyMode) return;
+        if (!historyMode) return;
         const activeTab = document.querySelector('.tab-btn.active');
         if (!activeTab || activeTab.dataset.tab !== 'history') return;
         switch (e.key) {
@@ -510,7 +650,6 @@ function getConfigs() {
                 ...llmOptions,
             };
         } else if (typeVal.startsWith('llm:')) {
-            // Preset name
             result[side] = {
                 type: 'llm',
                 preset: typeVal.substring(4),
@@ -531,12 +670,21 @@ function getConfigs() {
     return result;
 }
 
+function _getPlayerLabel(side, configs) {
+    const c = configs[side];
+    if (!c) return side;
+    if (c.type === 'human') return 'Human';
+    if (c.type === 'random') return 'Random';
+    if (c.type === 'pikafish') return 'Pikafish';
+    if (c.type === 'llm') return c.preset || c.model || 'LLM';
+    return c.type;
+}
+
 // --- Event Handlers ---
 
-async function onStart() {
+async function onNewGame() {
     try {
         const configs = getConfigs();
-        // Validate LLM configs (only for custom, presets are validated server-side)
         for (const side of ['red', 'black']) {
             if (!configs[side]) {
                 throw new Error(`Missing ${side} side configuration. Please reselect Player Type.`);
@@ -578,81 +726,99 @@ async function onStart() {
             timer: timerConfig,
         });
 
-        state.gameId = game_id;
-        state.fen = fen;
-        state.moveHistory = [];
-        state.lastMove = null;
-        state.status = 'playing';
-        state.viewIndex = -1;
+        const g = createGameState(game_id, {
+            fen,
+            redLabel: _getPlayerLabel('red', configs),
+            blackLabel: _getPlayerLabel('black', configs),
+        });
 
+        // Initialize timer
+        if (timerConfig.enabled) {
+            g.timer.enabled = true;
+            g.timer.redTime = timerConfig.initial_time;
+            g.timer.blackTime = timerConfig.initial_time;
+        }
+
+        gameStates.set(game_id, g);
+
+        // Save current game log before switching
+        const oldGame = activeGame();
+        if (oldGame) {
+            oldGame.logHTML = document.getElementById('game-log').innerHTML;
+            oldGame.currentLogEntry = _currentLogEntry;
+            oldGame.currentLogContent = _currentLogContent;
+            oldGame.currentStreamEl = _currentStreamEl;
+            oldGame.currentStreamCls = _currentStreamCls;
+        }
+
+        activeGameId = game_id;
         clearGameLog();
         renderer.clearSelection();
-        renderer.render(state.fen);
+        renderer.render(g.fen);
+        updateTimerDisplay();
         switchTab('log');
-
-        // Initialize timer display
-        if (timerConfig.enabled) {
-            timerState.enabled = true;
-            timerState.redTime = timerConfig.initial_time;
-            timerState.blackTime = timerConfig.initial_time;
-            timerState.activeSide = null;
-            timerState.lastSync = 0;
-            updateTimerDisplay();
-        } else {
-            resetTimerState();
-        }
 
         updateUI();
         updateHumanInteractive();
 
+        // Auto-start the game
+        setStatus('Starting game...');
+        g.status = 'playing';
         connectSSE(game_id);
-
         await apiPost(`/api/game/${game_id}/start`);
         setStatus('Game started');
         updateUI();
         updateHumanInteractive();
     } catch (e) {
-        alert('Failed to start: ' + e.message);
+        alert('Failed to create game: ' + e.message);
         setStatus('Error: ' + e.message);
     }
 }
 
-function closeGameStream() {
-    if (!state.eventSource) return;
-    state.eventSource.close();
-    state.eventSource = null;
+function closeGameStream(g) {
+    if (!g || !g.eventSource) return;
+    g.eventSource.close();
+    g.eventSource = null;
 }
 
 function enterReadyState(fen, statusMessage = 'Ready') {
-    closeGameStream();
-    state.gameId = null;
-    state.status = 'waiting';
-    state.moveHistory = [];
-    state.lastMove = null;
-    state.viewIndex = -1;
-    state.fen = fen;
-    state.turn = fen.split(' ')[1] || 'w';
-    syncTimerPreviewFromSettings();
+    // This is only used for reset of the active game or when no game exists
+    const g = activeGame();
+    if (g) {
+        closeGameStream(g);
+        gameStates.delete(g.gameId);
+        activeGameId = null;
+    }
 
-    clearGameLog();
-    renderer.clearSelection();
-    renderer.humanInteractive = false;
-    renderer.render(state.fen);
-    hideGameOver();
-    setStatus(statusMessage);
-    updateUI();
+    // Switch to another remaining game or show empty state
+    const remaining = Array.from(gameStates.keys());
+    if (remaining.length > 0) {
+        switchActiveGame(remaining[remaining.length - 1]);
+    } else {
+        clearGameLog();
+        renderer.clearSelection();
+        renderer.humanInteractive = false;
+        renderer.render(fen);
+        document.getElementById('fen-input').value = fen;
+        hideGameOver();
+        syncTimerPreviewFromSettings();
+        setStatus(statusMessage);
+        updateUI();
+    }
 }
 
 function applySeekState(data, statusMessage = null) {
-    state.fen = data.fen;
-    state.turn = (data.turn === 'black' ? 'b' : 'w');
-    state.moveHistory = data.move_history || [];
-    state.lastMove = state.moveHistory.length > 0 ? state.moveHistory[state.moveHistory.length - 1].move : null;
-    state.viewIndex = -1;
+    const g = activeGame();
+    if (!g) return;
+    g.fen = data.fen;
+    g.turn = (data.turn === 'black' ? 'b' : 'w');
+    g.moveHistory = data.move_history || [];
+    g.lastMove = g.moveHistory.length > 0 ? g.moveHistory[g.moveHistory.length - 1].move : null;
+    g.viewIndex = -1;
 
     syncGameLogWithHistory();
     renderer.clearSelection();
-    renderer.render(state.fen, state.lastMove);
+    renderer.render(g.fen, g.lastMove);
     if (statusMessage) {
         setStatus(statusMessage);
     }
@@ -661,47 +827,55 @@ function applySeekState(data, statusMessage = null) {
 }
 
 async function onPause() {
-    if (!state.gameId) return;
+    const g = activeGame();
+    if (!g) return;
     try {
-        if (state.status === 'playing') {
-            await apiPost(`/api/game/${state.gameId}/pause`);
-            state.status = 'paused';
-        } else if (state.status === 'paused') {
-            if (state.viewIndex !== -1) {
-                await apiPost(`/api/game/${state.gameId}/seek`, { ply: state.viewIndex });
+        if (g.status === 'playing') {
+            await apiPost(`/api/game/${g.gameId}/pause`);
+            g.status = 'paused';
+        } else if (g.status === 'paused') {
+            if (g.viewIndex !== -1) {
+                await apiPost(`/api/game/${g.gameId}/seek`, { ply: g.viewIndex });
             }
-            await apiPost(`/api/game/${state.gameId}/resume`);
-            state.status = 'playing';
+            await apiPost(`/api/game/${g.gameId}/resume`);
+            g.status = 'playing';
         }
         updateUI();
         updateHumanInteractive();
-    } catch (e) {
+        } catch (e) {
         alert('Error: ' + e.message);
     }
 }
 
 async function onReset() {
-    closeGameStream();
-    if (state.gameId) {
-        try { await apiPost(`/api/game/${state.gameId}/reset`); } catch (_) {}
-    }
+    const g = activeGame();
+    if (!g) return;
+    closeGameStream(g);
+    try { await apiPost(`/api/game/${g.gameId}/reset`); } catch (_) {}
+    stopTimerInterval(g);
     enterReadyState(document.getElementById('fen-input').value.trim() || DEFAULT_FEN, 'Ready');
 }
 
 function onInitFEN() {
-    if (state.status === 'playing' || state.status === 'paused') return;
+    const g = activeGame();
+    if (g && (g.status === 'playing' || g.status === 'paused')) return;
 
     document.getElementById('fen-input').value = DEFAULT_FEN;
-    enterReadyState(DEFAULT_FEN, 'Initial position loaded');
+    if (!g) {
+        renderer.render(DEFAULT_FEN);
+        setStatus('Initial position loaded');
+    }
 }
 
 function onLoadFEN() {
-    if (state.status === 'playing' || state.status === 'paused') return;
+    const g = activeGame();
+    if (g && (g.status === 'playing' || g.status === 'paused')) return;
 
     const fen = document.getElementById('fen-input').value.trim();
     if (!fen) return;
     try {
-        enterReadyState(fen, 'FEN loaded');
+        renderer.render(fen);
+        setStatus('FEN loaded');
     } catch (e) {
         alert('Invalid FEN');
     }
@@ -709,19 +883,24 @@ function onLoadFEN() {
 
 function onExportFEN() {
     let fen;
-    if (state.historyMode && state.historyGame) {
-        if (state.historyViewIndex === 0) {
-            fen = state.historyGame.initial_fen || DEFAULT_FEN;
+    if (historyMode && historyGame) {
+        if (historyViewIndex === 0) {
+            fen = historyGame.initial_fen || DEFAULT_FEN;
         } else {
-            const m = (state.historyGame.moves || [])[state.historyViewIndex - 1];
+            const m = (historyGame.moves || [])[historyViewIndex - 1];
             fen = m ? m.fen : DEFAULT_FEN;
         }
-    } else if (state.viewIndex === -1) {
-        fen = state.fen;
-    } else if (state.viewIndex === 0) {
-        fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
     } else {
-        fen = state.moveHistory[state.viewIndex - 1].fen;
+        const g = activeGame();
+        if (!g) {
+            fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
+        } else if (g.viewIndex === -1) {
+            fen = g.fen;
+        } else if (g.viewIndex === 0) {
+            fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
+        } else {
+            fen = g.moveHistory[g.viewIndex - 1].fen;
+        }
     }
     if (navigator.clipboard) {
         navigator.clipboard.writeText(fen).then(() => {
@@ -735,47 +914,50 @@ function onExportFEN() {
 }
 
 function onStepBack() {
-    if (state.moveHistory.length === 0) return;
-    if (state.viewIndex === -1) {
-        state.viewIndex = state.moveHistory.length - 1;
-    } else if (state.viewIndex > 0) {
-        state.viewIndex--;
+    const g = activeGame();
+    if (!g || g.moveHistory.length === 0) return;
+    if (g.viewIndex === -1) {
+        g.viewIndex = g.moveHistory.length - 1;
+    } else if (g.viewIndex > 0) {
+        g.viewIndex--;
     } else {
-        return; // already at start
+        return;
     }
     showViewIndex();
     updateUI();
 }
 
 function onStepForward() {
-    if (state.viewIndex === -1) return; // already at live
-    state.viewIndex++;
-    if (state.viewIndex >= state.moveHistory.length) {
-        state.viewIndex = -1; // back to live
+    const g = activeGame();
+    if (!g || g.viewIndex === -1) return;
+    g.viewIndex++;
+    if (g.viewIndex >= g.moveHistory.length) {
+        g.viewIndex = -1;
     }
     showViewIndex();
     updateUI();
 }
 
 function showViewIndex() {
-    if (state.viewIndex === -1) {
-        // Show current live position
-        renderer.render(state.fen, state.lastMove);
-    } else if (state.viewIndex === 0) {
-        // Before first move - show initial FEN
+    const g = activeGame();
+    if (!g) return;
+    if (g.viewIndex === -1) {
+        renderer.render(g.fen, g.lastMove);
+    } else if (g.viewIndex === 0) {
         const initialFen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
         renderer.render(initialFen);
     } else {
-        const entry = state.moveHistory[state.viewIndex - 1];
+        const entry = g.moveHistory[g.viewIndex - 1];
         renderer.render(entry.fen, entry.move);
     }
 }
 
 async function submitHumanMove(move) {
-    if (!state.gameId) return;
+    const g = activeGame();
+    if (!g) return;
     try {
         renderer.humanInteractive = false;
-        await apiPost(`/api/game/${state.gameId}/human-move`, { move });
+        await apiPost(`/api/game/${g.gameId}/human-move`, { move });
     } catch (e) {
         alert('Invalid move: ' + e.message);
         updateHumanInteractive();
@@ -783,9 +965,10 @@ async function submitHumanMove(move) {
 }
 
 async function fetchLegalMovesForPiece(col, row) {
-    if (!state.gameId) return;
+    const g = activeGame();
+    if (!g) return;
     try {
-        const data = await apiGet(`/api/game/${state.gameId}/legal-moves?col=${col}&row=${row}`);
+        const data = await apiGet(`/api/game/${g.gameId}/legal-moves?col=${col}&row=${row}`);
         if (data.moves) {
             const legalMoves = data.moves.map(m => ({
                 col: m.charCodeAt(2) - 97,
@@ -799,147 +982,189 @@ async function fetchLegalMovesForPiece(col, row) {
 }
 
 function updateHumanInteractive() {
-    if (state.historyMode || state.status !== 'playing' || state.viewIndex !== -1) {
+    const g = activeGame();
+    if (historyMode || !g || g.status !== 'playing' || g.viewIndex !== -1) {
         renderer.humanInteractive = false;
         return;
     }
-    // Check if current turn's player is human
-    const side = state.turn === 'w' ? 'red' : 'black';
+    const side = g.turn === 'w' ? 'red' : 'black';
     const type = document.getElementById(`${side}-type`).value;
     renderer.humanInteractive = (type === 'human');
 }
 
 // --- SSE ---
 
+/** Check if this game is active AND the user is not in history replay mode */
+function isActiveVisible(gameId) {
+    return activeGameId === gameId && !historyMode;
+}
+
 function connectSSE(gameId) {
-    if (state.eventSource) state.eventSource.close();
+    const g = gameStates.get(gameId);
+    if (!g) return;
+    if (g.eventSource) g.eventSource.close();
 
     const es = new EventSource(`/api/game/${gameId}/stream`);
-    state.eventSource = es;
+    g.eventSource = es;
 
     es.addEventListener('move', (e) => {
         const data = JSON.parse(e.data);
-        state.fen = data.fen;
-        state.turn = data.fen.split(' ')[1] || 'w';
-        state.lastMove = data.move;
-        state.moveHistory.push(data);
+        g.fen = data.fen;
+        g.turn = data.fen.split(' ')[1] || 'w';
+        g.lastMove = data.move;
+        g.moveHistory.push(data);
 
-        // Finalize current log entry with move info
-        finalizeLogEntry(data);
-
-        if (state.viewIndex === -1 && !state.historyMode) {
-            renderer.render(state.fen, data.move);
+        if (isActiveVisible(gameId)) {
+            finalizeLogEntry(data);
+            if (g.viewIndex === -1) {
+                renderer.render(g.fen, data.move);
+            }
+            updateTurnIndicator();
+            updateHumanInteractive();
         }
-        updateTurnIndicator();
-        updateHumanInteractive();
     });
 
     es.addEventListener('reasoning', (e) => {
         const data = JSON.parse(e.data);
-        appendToCurrentLog(data.side, data.content, 'reasoning', true);
+        if (isActiveVisible(gameId)) {
+            appendToCurrentLog(data.side, data.content, 'reasoning', true);
+        }
     });
 
     es.addEventListener('thinking', (e) => {
         const data = JSON.parse(e.data);
-        appendToCurrentLog(data.side, data.content, 'thinking', true);
+        if (isActiveVisible(gameId)) {
+            appendToCurrentLog(data.side, data.content, 'thinking', true);
+        }
     });
 
     es.addEventListener('tool_call', (e) => {
         const data = JSON.parse(e.data);
-        const argsStr = data.args && Object.keys(data.args).length > 0 ? JSON.stringify(data.args) : '';
-        appendToCurrentLog(data.side, `> Tool: ${data.tool}(${argsStr})`, 'tool-call', false);
+        if (isActiveVisible(gameId)) {
+            const argsStr = data.args && Object.keys(data.args).length > 0 ? JSON.stringify(data.args) : '';
+            appendToCurrentLog(data.side, `> Tool: ${data.tool}(${argsStr})`, 'tool-call', false);
+        }
     });
 
     es.addEventListener('tool_result', (e) => {
         const data = JSON.parse(e.data);
-        const resultStr = data.result.length > 200 ? data.result.slice(0, 200) + '...' : data.result;
-        appendToCurrentLog(data.side, `  Result: ${resultStr}`, 'tool-result', false);
+        if (isActiveVisible(gameId)) {
+            const resultStr = data.result.length > 200 ? data.result.slice(0, 200) + '...' : data.result;
+            appendToCurrentLog(data.side, `  Result: ${resultStr}`, 'tool-result', false);
+        }
     });
 
     es.addEventListener('turn', (e) => {
         const data = JSON.parse(e.data);
-        state.turn = data.side === 'red' ? 'w' : 'b';
-        updateTurnIndicator();
-        setStatus(`${data.side === 'red' ? 'Red' : 'Black'} is thinking...`);
-        updateHumanInteractive();
-        // Create a new log entry for this turn
-        createLogEntry(data.side);
-        // Update active timer side
-        if (timerState.enabled) {
-            timerState.activeSide = state.turn;
-            timerState.lastSync = Date.now();
-            startTimerInterval();
+        g.turn = data.side === 'red' ? 'w' : 'b';
+        if (isActiveVisible(gameId)) {
+            updateTurnIndicator();
+            setStatus(`${data.side === 'red' ? 'Red' : 'Black'} is thinking...`);
+            updateHumanInteractive();
+            createLogEntry(data.side);
+        }
+        if (g.timer.enabled) {
+            g.timer.activeSide = g.turn;
+            g.timer.lastSync = Date.now();
+            startTimerInterval(g);
         }
     });
 
     es.addEventListener('timer', (e) => {
         const data = JSON.parse(e.data);
-        timerState.redTime = data.red;
-        timerState.blackTime = data.black;
-        timerState.lastSync = Date.now();
-        updateTimerDisplay();
+        g.timer.redTime = data.red;
+        g.timer.blackTime = data.black;
+        g.timer.lastSync = Date.now();
+        if (isActiveVisible(gameId)) updateTimerDisplay();
     });
 
     es.addEventListener('waiting_human', (e) => {
         const data = JSON.parse(e.data);
-        setStatus(`Waiting for ${data.side} (human) to move...`);
-        updateHumanInteractive();
+        if (isActiveVisible(gameId)) {
+            setStatus(`Waiting for ${data.side} (human) to move...`);
+            updateHumanInteractive();
+        }
     });
 
     es.addEventListener('game_over', (e) => {
         const data = JSON.parse(e.data);
-        state.status = 'finished';
-        renderer.humanInteractive = false;
-        stopTimerInterval();
-        timerState.activeSide = null;
-        updateTimerDisplay();
-        showGameOver(data.winner, data.reason);
-        setStatus('Game over, finishing remaining Pikafish evaluations...');
-        updateUI();
+        g.status = 'finished';
+        stopTimerInterval(g);
+        g.timer.activeSide = null;
+
+        if (isActiveVisible(gameId)) {
+            renderer.humanInteractive = false;
+            updateTimerDisplay();
+            showGameOver(data.winner, data.reason);
+            setStatus('Game over, finishing remaining Pikafish evaluations...');
+            updateUI();
+        }
+        // Refresh leaderboard after log is written
+        setTimeout(() => {
+            const activeTab = document.querySelector('.tab-btn.active');
+            if (activeTab && activeTab.dataset.tab === 'leaderboard') loadLeaderboard();
+        }, 3000);
     });
 
     es.addEventListener('seek', (e) => {
         const data = JSON.parse(e.data);
-        applySeekState(data, `Position reset to move #${data.ply}`);
+        if (isActiveVisible(gameId)) {
+            applySeekState(data, `Position reset to move #${data.ply}`);
+        }
     });
 
     es.addEventListener('eval', (e) => {
         const data = JSON.parse(e.data);
-        state.scoreType = data.score_type || 'Elo';
-        updateEvalDisplay(data.move_number, data.score);
+        g.scoreType = data.score_type || 'Elo';
+        if (data.move_number > 0 && data.move_number <= g.moveHistory.length) {
+            g.moveHistory[data.move_number - 1].eval = data.score;
+        }
+        if (isActiveVisible(gameId)) {
+            updateEvalDisplay(data.move_number, data.score);
+        }
     });
 
     es.addEventListener('status', (e) => {
         const data = JSON.parse(e.data);
         if (data.status === 'paused') {
-            state.status = 'paused';
-            setStatus('Game paused');
-            stopTimerInterval();
-            timerState.activeSide = null;
-            updateTimerDisplay();
+            g.status = 'paused';
+            stopTimerInterval(g);
+            g.timer.activeSide = null;
+            if (isActiveVisible(gameId)) {
+                setStatus('Game paused');
+                updateTimerDisplay();
+            }
         } else if (data.status === 'playing') {
-            state.status = 'playing';
-            setStatus('Game resumed');
+            g.status = 'playing';
+            if (isActiveVisible(gameId)) {
+                setStatus('Game resumed');
+            }
         } else if (data.status === 'finished') {
-            state.status = 'finished';
-            setStatus('Game over');
-            stopTimerInterval();
-            timerState.activeSide = null;
-            updateTimerDisplay();
+            g.status = 'finished';
+            stopTimerInterval(g);
+            g.timer.activeSide = null;
+            if (isActiveVisible(gameId)) {
+                setStatus('Game over');
+                updateTimerDisplay();
+            }
         }
-        updateUI();
-        updateHumanInteractive();
-    });
+        if (isActiveVisible(gameId)) {
+            updateUI();
+            updateHumanInteractive();
+        }
+        });
 
     es.addEventListener('error', (e) => {
         try {
             const data = JSON.parse(e.data);
-            setStatus('Error: ' + (data.message || 'Connection error'));
+            if (activeGameId === gameId) {
+                setStatus('Error: ' + (data.message || 'Connection error'));
+            }
         } catch (_) {}
     });
 
     es.onerror = () => {
-        if (state.status === 'playing') {
+        if (g.status === 'playing' && activeGameId === gameId) {
             setStatus('Connection lost, reconnecting...');
         }
     };
@@ -948,26 +1173,26 @@ function connectSSE(gameId) {
 // --- UI Updates ---
 
 function updateUI() {
-    const isPlaying = state.status === 'playing';
-    const isPaused = state.status === 'paused';
-    const isWaiting = state.status === 'waiting';
+    const g = activeGame();
+    const status = g ? g.status : 'waiting';
+    const isPlaying = status === 'playing';
+    const isPaused = status === 'paused';
+    const isWaiting = status === 'waiting';
     const isGameActive = isPlaying || isPaused;
+    const hasGame = !!g;
 
-    document.getElementById('btn-start').disabled = !isWaiting;
-    document.getElementById('btn-pause').disabled = !isPlaying && !isPaused;
+    document.getElementById('btn-pause').disabled = !hasGame || (!isPlaying && !isPaused);
     document.getElementById('btn-pause').textContent = isPaused ? 'Resume' : 'Pause';
-    document.getElementById('btn-reset').disabled = isWaiting;
+    document.getElementById('btn-reset').disabled = !hasGame || isWaiting;
     document.getElementById('fen-input').disabled = isGameActive;
     document.getElementById('btn-load-fen').disabled = isGameActive;
     document.getElementById('btn-init-fen').disabled = isGameActive;
 
-    // Step back/forward: enabled when there's history
-    document.getElementById('btn-step-back').disabled = state.moveHistory.length === 0 || (state.viewIndex === 0);
-    document.getElementById('btn-step-forward').disabled = state.viewIndex === -1;
-
-    // Disable config during play
-    const inputs = document.querySelectorAll('#tab-settings input, #tab-settings select');
-    inputs.forEach(inp => { inp.disabled = isPlaying || isPaused; });
+    // Step back/forward
+    const moveCount = g ? g.moveHistory.length : 0;
+    const viewIndex = g ? g.viewIndex : -1;
+    document.getElementById('btn-step-back').disabled = moveCount === 0 || (viewIndex === 0);
+    document.getElementById('btn-step-forward').disabled = viewIndex === -1;
 
     updateTurnIndicator();
     scheduleRightColumnHeightSync();
@@ -975,20 +1200,28 @@ function updateUI() {
 
 function updateTurnIndicator() {
     const el = document.getElementById('turn-indicator');
-    const side = state.turn === 'w' ? 'red' : 'black';
+    const g = activeGame();
+
+    if (!g) {
+        el.className = '';
+        el.innerHTML = 'Ready to start';
+        return;
+    }
+
+    const side = g.turn === 'w' ? 'red' : 'black';
     const sideName = side === 'red' ? 'Red (红方)' : 'Black (黑方)';
     el.className = side;
 
-    if (state.viewIndex !== -1) {
-        el.innerHTML = state.viewIndex === 0
+    if (g.viewIndex !== -1) {
+        el.innerHTML = g.viewIndex === 0
             ? 'Viewing initial position'
-            : `Viewing after move #${state.viewIndex} / ${state.moveHistory.length}`;
-    } else if (state.status === 'finished') {
+            : `Viewing after move #${g.viewIndex} / ${g.moveHistory.length}`;
+    } else if (g.status === 'finished') {
         el.innerHTML = `Game Over`;
-    } else if (state.status === 'waiting') {
+    } else if (g.status === 'waiting') {
         el.innerHTML = `Ready to start`;
     } else {
-        el.innerHTML = `<span class="turn-dot"></span> ${sideName}'s turn | Move #${state.moveHistory.length + 1}`;
+        el.innerHTML = `<span class="turn-dot"></span> ${sideName}'s turn | Move #${g.moveHistory.length + 1}`;
     }
 }
 
@@ -1030,12 +1263,10 @@ function syncRightColumnHeight() {
 }
 
 // --- Unified Game Log ---
-// Each turn is a collapsible <details> element. The latest one is open, previous ones collapsed.
-
-let _currentLogEntry = null; // current <details> element
-let _currentLogContent = null; // the content div inside current <details>
-let _currentStreamEl = null; // current streaming element
-let _currentStreamCls = null; // class of current streaming element
+let _currentLogEntry = null;
+let _currentLogContent = null;
+let _currentStreamEl = null;
+let _currentStreamCls = null;
 
 function formatMoveLabel(moveData) {
     const move = moveData.move || '';
@@ -1058,12 +1289,12 @@ function scrollLogToBottom(shouldStick = true) {
 }
 
 function createLogEntry(side) {
-    // Collapse previous entry
     if (_currentLogEntry) {
         _currentLogEntry.removeAttribute('open');
     }
 
-    const moveNum = state.moveHistory.length + 1;
+    const g = activeGame();
+    const moveNum = g ? g.moveHistory.length + 1 : '?';
     const sideName = side === 'red' ? 'Red' : 'Black';
     const dotClass = side === 'red' ? 'red-dot' : 'black-dot';
 
@@ -1129,11 +1360,9 @@ function finalizeLogEntry(moveData) {
         const sideName = moveData.side === 'red' ? 'Red' : 'Black';
         const dotClass = moveData.side === 'red' ? 'red-dot' : 'black-dot';
         const captured = moveData.captured ? ` x${moveData.captured}` : '';
-        // Preserve existing eval badge if any
         const existingBadge = summary.querySelector('.eval-badge');
         summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${formatMoveLabel(moveData)}${captured}`;
         if (existingBadge) summary.appendChild(existingBadge);
-        // Collapse it
         _currentLogEntry.removeAttribute('open');
     }
     _currentLogEntry = null;
@@ -1148,7 +1377,6 @@ function clearGameLog() {
     _currentLogContent = null;
     _currentStreamEl = null;
     _currentStreamCls = null;
-    // Hide eval chart
     const chartContainer = document.getElementById('eval-chart-container');
     if (chartContainer) chartContainer.style.display = 'none';
 }
@@ -1172,6 +1400,7 @@ function applyEvalBadge(summary, score, scoreType) {
 }
 
 function appendHistoricalLogEntry(moveData) {
+    const g = activeGame();
     const sideName = moveData.side === 'red' ? 'Red' : 'Black';
     const dotClass = moveData.side === 'red' ? 'red-dot' : 'black-dot';
     const captured = moveData.captured ? ` x${moveData.captured}` : '';
@@ -1188,25 +1417,30 @@ function appendHistoricalLogEntry(moveData) {
     details.appendChild(content);
 
     if (moveData.eval) {
-        applyEvalBadge(summary, moveData.eval, moveData.score_type || state.scoreType || 'Elo');
+        const scoreType = (g && g.scoreType) || 'Elo';
+        applyEvalBadge(summary, moveData.eval, moveData.score_type || scoreType);
     }
 
     getGameLogEl().appendChild(details);
 }
 
 function rebuildGameLogFromHistory() {
+    const g = activeGame();
+    if (!g) return;
     clearGameLog();
-    for (const move of state.moveHistory) {
+    for (const move of g.moveHistory) {
         appendHistoricalLogEntry(move);
     }
     drawEvalChart();
 }
 
 function syncGameLogWithHistory() {
+    const g = activeGame();
+    if (!g) return;
     const log = getGameLogEl();
     if (!log) return;
 
-    const desiredCount = state.moveHistory.length;
+    const desiredCount = g.moveHistory.length;
     const entries = Array.from(log.querySelectorAll('.log-entry'));
     let keptCount = 0;
 
@@ -1253,14 +1487,15 @@ function formatEvalScore(score, scoreType) {
 }
 
 function updateEvalDisplay(moveNumber, score) {
+    const g = activeGame();
+    if (!g) return;
     // Store eval in moveHistory
-    if (moveNumber > 0 && moveNumber <= state.moveHistory.length) {
-        state.moveHistory[moveNumber - 1].eval = score;
+    if (moveNumber > 0 && moveNumber <= g.moveHistory.length) {
+        g.moveHistory[moveNumber - 1].eval = score;
     }
 
-    const scoreType = state.scoreType || 'Elo';
+    const scoreType = g.scoreType || 'Elo';
 
-    // Find log entry and update badge
     const logEntries = document.querySelectorAll('.log-entry');
     for (const entry of logEntries) {
         const summary = entry.querySelector('summary');
@@ -1272,12 +1507,13 @@ function updateEvalDisplay(moveNumber, score) {
         }
     }
 
-    // Redraw chart
     drawEvalChart();
 }
 
 function restoreEvalBadges() {
-    for (const move of state.moveHistory) {
+    const g = activeGame();
+    if (!g) return;
+    for (const move of g.moveHistory) {
         if (move.eval) {
             updateEvalDisplay(move.number, move.eval);
         }
@@ -1286,15 +1522,15 @@ function restoreEvalBadges() {
 
 // --- Eval Chart ---
 
-// Store chart layout info for tooltip hit-testing
 let _chartState = null;
 
 function _getEvalPoints() {
-    const isElo = (state.scoreType || 'Elo') === 'Elo';
-    // First pass: collect non-mate values to find max
+    const g = activeGame();
+    if (!g) return [];
+    const isElo = (g.scoreType || 'Elo') === 'Elo';
     let maxAbs = 0;
     const rawEntries = [];
-    for (const move of state.moveHistory) {
+    for (const move of g.moveHistory) {
         if (move.eval) {
             if (move.eval.type === 'mate') {
                 rawEntries.push({ x: move.number, isMate: true, sign: move.eval.value > 0 ? 1 : -1, raw: move.eval });
@@ -1305,7 +1541,6 @@ function _getEvalPoints() {
             }
         }
     }
-    // Mate cap: fixed ceiling per score type
     const mateCap = isElo ? 100 : 10000;
 
     const points = [];
@@ -1320,7 +1555,6 @@ function _getEvalPoints() {
 }
 
 function _pickYTicks(yRange) {
-    // Pick a nice step so we get ~2-3 ticks on each side of zero
     const candidates = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
     for (const step of candidates) {
         if (yRange / step <= 4) return step;
@@ -1350,36 +1584,29 @@ function drawEvalChart() {
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
 
-    // Layout
     const padL = 36, padR = 12, padT = 12, padB = 18;
     const plotW = w - padL - padR;
     const plotH = h - padT - padB;
 
-    // Y-axis range: symmetric around 0
     const maxAbs = Math.max(50, ...points.map(p => Math.abs(p.y)));
     const yRange = maxAbs * 1.15;
 
-    // X-axis range
     const xMin = 1;
     const xMax = Math.max(points[points.length - 1].x, 2);
 
     function toCanvasX(x) { return padL + ((x - xMin) / (xMax - xMin)) * plotW; }
     function toCanvasY(y) { return padT + ((yRange - y) / (2 * yRange)) * plotH; }
 
-    // Save chart state for tooltip
     _chartState = { points, padL, padR, padT, padB, plotW, plotH, xMin, xMax, yRange, toCanvasX, toCanvasY, w, h };
 
-    // Clear
     ctx.clearRect(0, 0, w, h);
 
-    // Background: red top half, black bottom half
     const midY = toCanvasY(0);
     ctx.fillStyle = 'rgba(180, 30, 30, 0.05)';
     ctx.fillRect(padL, padT, plotW, midY - padT);
     ctx.fillStyle = 'rgba(26, 26, 26, 0.05)';
     ctx.fillRect(padL, midY, plotW, padT + plotH - midY);
 
-    // Zero line
     ctx.strokeStyle = '#ccc';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 3]);
@@ -1389,14 +1616,12 @@ function drawEvalChart() {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Y-axis: only a few ticks
     const yStep = _pickYTicks(yRange);
     ctx.fillStyle = '#2c2c2c';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     for (let v = -Math.floor(yRange / yStep) * yStep; v <= yRange; v += yStep) {
-        // Fix floating point (e.g. 0.30000000000000004)
         v = Math.round(v * 1000) / 1000;
         if (v === 0) continue;
         const cy = toCanvasY(v);
@@ -1411,7 +1636,6 @@ function drawEvalChart() {
         ctx.stroke();
     }
 
-    // X-axis labels
     ctx.fillStyle = '#2c2c2c';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'center';
@@ -1421,9 +1645,7 @@ function drawEvalChart() {
         ctx.fillText(x, toCanvasX(x), padT + plotH + 3);
     }
 
-    // Fill area: split into positive and negative segments
     if (points.length >= 1) {
-        // Positive fill (above zero line)
         ctx.save();
         ctx.beginPath();
         ctx.rect(padL, padT, plotW, midY - padT);
@@ -1437,7 +1659,6 @@ function drawEvalChart() {
         ctx.fill();
         ctx.restore();
 
-        // Negative fill (below zero line)
         ctx.save();
         ctx.beginPath();
         ctx.rect(padL, midY, plotW, padT + plotH - midY);
@@ -1452,7 +1673,6 @@ function drawEvalChart() {
         ctx.restore();
     }
 
-    // Draw curve line
     ctx.strokeStyle = '#c07830';
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
@@ -1466,7 +1686,6 @@ function drawEvalChart() {
     }
     ctx.stroke();
 
-    // Draw dots
     for (const p of points) {
         const cx = toCanvasX(p.x);
         const cy = toCanvasY(p.y);
@@ -1476,7 +1695,6 @@ function drawEvalChart() {
         ctx.fill();
     }
 
-    // Border
     ctx.strokeStyle = '#ece6da';
     ctx.lineWidth = 1;
     ctx.strokeRect(padL, padT, plotW, plotH);
@@ -1488,7 +1706,6 @@ function _initEvalChartTooltip() {
     const canvas = document.getElementById('eval-chart');
     if (!canvas) return;
 
-    // Create tooltip element
     const tooltip = document.createElement('div');
     tooltip.id = 'eval-tooltip';
     tooltip.style.cssText = 'position:fixed;display:none;padding:4px 8px;background:rgba(44,44,44,0.92);color:#fff;font-size:11px;font-family:monospace;border-radius:4px;pointer-events:none;z-index:50;white-space:nowrap;';
@@ -1505,13 +1722,11 @@ function _initEvalChartTooltip() {
         const my = e.clientY - rect.top;
         const { points, padL, padT, plotW, plotH, toCanvasX, toCanvasY } = _chartState;
 
-        // Check if mouse is inside plot area
         if (mx < padL || mx > padL + plotW || my < padT || my > padT + plotH) {
             tooltip.style.display = 'none';
             return;
         }
 
-        // Find closest point
         let closest = null;
         let minDist = Infinity;
         for (const p of points) {
@@ -1528,7 +1743,8 @@ function _initEvalChartTooltip() {
             return;
         }
 
-        const scoreType = state.scoreType || 'Elo';
+        const g = activeGame();
+        const scoreType = (g && g.scoreType) || 'Elo';
         const label = formatEvalScore(closest.raw, scoreType);
         const sideLabel = closest.y >= 0 ? 'Red' : 'Black';
         tooltip.textContent = `#${closest.x}  ${label}  (${sideLabel})`;
@@ -1536,7 +1752,6 @@ function _initEvalChartTooltip() {
         tooltip.style.left = (e.clientX + 12) + 'px';
         tooltip.style.top = (e.clientY - 28) + 'px';
 
-        // Redraw chart with highlight
         drawEvalChart();
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
@@ -1544,7 +1759,6 @@ function _initEvalChartTooltip() {
         ctx.scale(dpr, dpr);
         const hx = toCanvasX(closest.x);
         const hy = toCanvasY(closest.y);
-        // Vertical guide line
         ctx.strokeStyle = 'rgba(192,120,48,0.4)';
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 3]);
@@ -1553,7 +1767,6 @@ function _initEvalChartTooltip() {
         ctx.lineTo(hx, padT + plotH);
         ctx.stroke();
         ctx.setLineDash([]);
-        // Highlight dot
         ctx.fillStyle = '#c07830';
         ctx.beginPath();
         ctx.arc(hx, hy, 5, 0, Math.PI * 2);
@@ -1566,7 +1779,7 @@ function _initEvalChartTooltip() {
 
     canvas.addEventListener('mouseleave', () => {
         tooltip.style.display = 'none';
-        drawEvalChart(); // redraw without highlight
+        drawEvalChart();
     });
 }
 
@@ -1595,14 +1808,61 @@ async function loadHistoryList() {
     const listEl = document.getElementById('history-list');
     listEl.innerHTML = '<div class="history-empty">Loading...</div>';
     try {
-        const resp = await fetch('/api/logs');
-        const data = await resp.json();
-        const logs = data.logs || [];
-        if (logs.length === 0) {
-            listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
-            return;
-        }
+        // Fetch both active games and completed logs
+        const [activeResp, logsResp] = await Promise.all([
+            fetch('/api/games').then(r => r.json()).catch(() => ({ games: [] })),
+            fetch('/api/logs').then(r => r.json()).catch(() => ({ logs: [] })),
+        ]);
+
+        const activeGames = (activeResp.games || []).filter(g => g.status !== 'finished');
+        const finishedGames = (activeResp.games || []).filter(g => g.status === 'finished');
+        const logs = logsResp.logs || [];
+
         listEl.innerHTML = '';
+
+        // Section: In Progress
+        if (activeGames.length > 0) {
+            const header = document.createElement('div');
+            header.className = 'history-section-header';
+            header.textContent = '\u8fdb\u884c\u4e2d (In Progress)';
+            listEl.appendChild(header);
+
+            for (const g of activeGames) {
+                const item = document.createElement('div');
+                item.className = 'history-item active-game';
+                const statusText = g.status === 'playing' ? '\u5bf9\u5c40\u4e2d' : g.status === 'paused' ? '\u5df2\u6682\u505c' : g.status;
+                const statusClass = g.status === 'playing' ? 'status-playing' : 'status-paused';
+                item.innerHTML = `
+                    <div class="hist-meta">
+                        <span class="hist-status ${statusClass}">${escapeHtml(statusText)}</span>
+                        <span class="hist-moves-count">${g.move_count} moves</span>
+                    </div>
+                    <div class="hist-players">
+                        <span class="red-name">${escapeHtml(g.red_label)}</span>
+                        <span class="vs">vs</span>
+                        <span class="black-name">${escapeHtml(g.black_label)}</span>
+                    </div>
+                `;
+                item.addEventListener('click', () => {
+                    // Switch to this game's tab
+                    if (gameStates.has(g.id)) {
+                        switchActiveGame(g.id);
+                        switchTab('log');
+                    }
+                });
+                listEl.appendChild(item);
+            }
+        }
+
+        // Section: Completed (active finished games that haven't been logged yet + logs)
+        const hasCompleted = finishedGames.length > 0 || logs.length > 0;
+        if (hasCompleted) {
+            const header = document.createElement('div');
+            header.className = 'history-section-header';
+            header.textContent = '\u5df2\u7ed3\u675f (Completed)';
+            listEl.appendChild(header);
+        }
+
         for (const log of logs) {
             const item = document.createElement('div');
             item.className = 'history-item';
@@ -1623,6 +1883,10 @@ async function loadHistoryList() {
             `;
             item.addEventListener('click', () => openHistoryDetail(log.filename));
             listEl.appendChild(item);
+        }
+
+        if (activeGames.length === 0 && logs.length === 0) {
+            listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
         }
     } catch (e) {
         listEl.innerHTML = '<div class="history-empty">Failed to load history.</div>';
@@ -1645,17 +1909,15 @@ async function openHistoryDetail(filename) {
         if (!resp.ok) throw new Error('Failed to load');
         const game = await resp.json();
 
-        state.historyMode = true;
-        state.historyGame = game;
-        state.historyViewIndex = 0;
+        historyMode = true;
+        historyGame = game;
+        historyViewIndex = 0;
 
-        // Header info
         infoEl.innerHTML = `
             <span class="detail-players">${escapeHtml(game.red_label)} vs ${escapeHtml(game.black_label)}</span>
             &nbsp;|&nbsp;${escapeHtml(game.timestamp)}
         `;
 
-        // Build move list
         moveListEl.innerHTML = '';
         const moves = game.moves || [];
         for (let i = 0; i < moves.length; i++) {
@@ -1676,7 +1938,6 @@ async function openHistoryDetail(filename) {
             moveListEl.appendChild(item);
         }
 
-        // Render initial position
         renderer.clearSelection();
         historyRenderPosition();
         updateHistoryNavUI();
@@ -1687,26 +1948,26 @@ async function openHistoryDetail(filename) {
 }
 
 function historyJumpTo(index) {
-    if (!state.historyGame) return;
+    if (!historyGame) return;
     stopHistoryAutoplay();
-    const maxIndex = (state.historyGame.moves || []).length;
-    state.historyViewIndex = Math.max(0, Math.min(index, maxIndex));
+    const maxIndex = (historyGame.moves || []).length;
+    historyViewIndex = Math.max(0, Math.min(index, maxIndex));
     renderer.clearSelection();
     historyRenderPosition();
     updateHistoryNavUI();
 }
 
 function historyStepPrev() {
-    if (state.historyViewIndex > 0) {
-        historyJumpTo(state.historyViewIndex - 1);
+    if (historyViewIndex > 0) {
+        historyJumpTo(historyViewIndex - 1);
     }
 }
 
 function historyStepNext() {
-    if (!state.historyGame) return;
-    const maxIndex = (state.historyGame.moves || []).length;
-    if (state.historyViewIndex < maxIndex) {
-        historyJumpTo(state.historyViewIndex + 1);
+    if (!historyGame) return;
+    const maxIndex = (historyGame.moves || []).length;
+    if (historyViewIndex < maxIndex) {
+        historyJumpTo(historyViewIndex + 1);
     }
 }
 
@@ -1715,17 +1976,17 @@ function historyGoFirst() {
 }
 
 function historyGoLast() {
-    if (!state.historyGame) return;
-    historyJumpTo((state.historyGame.moves || []).length);
+    if (!historyGame) return;
+    historyJumpTo((historyGame.moves || []).length);
 }
 
 function historyRenderPosition() {
-    if (!state.historyGame) return;
-    const moves = state.historyGame.moves || [];
-    if (state.historyViewIndex === 0) {
-        renderer.render(state.historyGame.initial_fen);
+    if (!historyGame) return;
+    const moves = historyGame.moves || [];
+    if (historyViewIndex === 0) {
+        renderer.render(historyGame.initial_fen);
     } else {
-        const m = moves[state.historyViewIndex - 1];
+        const m = moves[historyViewIndex - 1];
         if (m) {
             renderer.render(m.fen, m.move);
         }
@@ -1733,30 +1994,28 @@ function historyRenderPosition() {
 }
 
 function updateHistoryNavUI() {
-    if (!state.historyGame) return;
-    const moves = state.historyGame.moves || [];
+    if (!historyGame) return;
+    const moves = historyGame.moves || [];
     const maxIndex = moves.length;
     const label = document.getElementById('hist-position-label');
 
-    if (state.historyViewIndex === 0) {
+    if (historyViewIndex === 0) {
         label.textContent = 'Initial';
     } else {
-        const m = moves[state.historyViewIndex - 1];
+        const m = moves[historyViewIndex - 1];
         label.textContent = `#${m.number} ${m.move}`;
     }
 
-    document.getElementById('btn-hist-first').disabled = state.historyViewIndex === 0;
-    document.getElementById('btn-hist-prev').disabled = state.historyViewIndex === 0;
-    document.getElementById('btn-hist-next').disabled = state.historyViewIndex >= maxIndex;
-    document.getElementById('btn-hist-last').disabled = state.historyViewIndex >= maxIndex;
+    document.getElementById('btn-hist-first').disabled = historyViewIndex === 0;
+    document.getElementById('btn-hist-prev').disabled = historyViewIndex === 0;
+    document.getElementById('btn-hist-next').disabled = historyViewIndex >= maxIndex;
+    document.getElementById('btn-hist-last').disabled = historyViewIndex >= maxIndex;
 
-    // Highlight active move item
     const moveListEl = document.getElementById('history-move-list');
     moveListEl.querySelectorAll('.hist-move-item').forEach(el => {
-        el.classList.toggle('active', parseInt(el.dataset.index) === state.historyViewIndex);
+        el.classList.toggle('active', parseInt(el.dataset.index) === historyViewIndex);
     });
 
-    // Scroll active item into view
     const activeItem = moveListEl.querySelector('.hist-move-item.active');
     if (activeItem) {
         activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -1765,9 +2024,9 @@ function updateHistoryNavUI() {
 
 function closeHistoryDetail() {
     stopHistoryAutoplay();
-    state.historyMode = false;
-    state.historyGame = null;
-    state.historyViewIndex = -1;
+    historyMode = false;
+    historyGame = null;
+    historyViewIndex = -1;
 
     const listView = document.getElementById('history-list-view');
     const detailView = document.getElementById('history-detail-view');
@@ -1776,14 +2035,23 @@ function closeHistoryDetail() {
 
     // Restore the board to the current live game position
     renderer.clearSelection();
-    showViewIndex();
+    const g = activeGame();
+    if (g) {
+        if (g.viewIndex === -1) {
+            renderer.render(g.fen, g.lastMove);
+        } else {
+            showViewIndex();
+        }
+    } else {
+        renderer.render(DEFAULT_FEN);
+    }
     updateHumanInteractive();
 }
 
 function stopHistoryAutoplay() {
-    if (state.historyAutoplayTimer) {
-        clearInterval(state.historyAutoplayTimer);
-        state.historyAutoplayTimer = null;
+    if (historyAutoplayTimer) {
+        clearInterval(historyAutoplayTimer);
+        historyAutoplayTimer = null;
     }
     const btn = document.getElementById('btn-hist-autoplay');
     if (btn) {
@@ -1793,27 +2061,160 @@ function stopHistoryAutoplay() {
 }
 
 function historyToggleAutoplay() {
-    if (state.historyAutoplayTimer) {
+    if (historyAutoplayTimer) {
         stopHistoryAutoplay();
         return;
     }
-    if (!state.historyGame) return;
-    const maxIndex = (state.historyGame.moves || []).length;
-    if (state.historyViewIndex >= maxIndex) return; // already at end
+    if (!historyGame) return;
+    const maxIndex = (historyGame.moves || []).length;
+    if (historyViewIndex >= maxIndex) return;
 
     const btn = document.getElementById('btn-hist-autoplay');
     btn.textContent = '\u23F8 Stop';
     btn.classList.add('playing');
 
-    state.historyAutoplayTimer = setInterval(() => {
-        const max = (state.historyGame.moves || []).length;
-        if (!state.historyGame || state.historyViewIndex >= max) {
+    historyAutoplayTimer = setInterval(() => {
+        const max = (historyGame.moves || []).length;
+        if (!historyGame || historyViewIndex >= max) {
             stopHistoryAutoplay();
             return;
         }
-        state.historyViewIndex++;
+        historyViewIndex++;
         renderer.clearSelection();
         historyRenderPosition();
         updateHistoryNavUI();
     }, 1000);
+}
+
+// --- Leaderboard ---
+
+function toggleLeaderboard() {
+    const page = document.getElementById('leaderboard-page');
+    const main = document.getElementById('main-area');
+    const btn = document.getElementById('btn-leaderboard');
+    const statusBar = document.getElementById('status-bar');
+    const isVisible = !page.classList.contains('hidden');
+
+    if (isVisible) {
+        page.classList.add('hidden');
+        main.style.display = '';
+        btn.classList.remove('active');
+        statusBar.style.display = '';
+    } else {
+        page.classList.remove('hidden');
+        main.style.display = 'none';
+        btn.classList.add('active');
+        statusBar.style.display = 'none';
+        loadLeaderboard();
+    }
+}
+
+async function loadLeaderboard() {
+    const container = document.getElementById('leaderboard-content');
+    if (!container) return;
+
+    try {
+        const resp = await fetch('/api/logs');
+        const data = await resp.json();
+        const logs = data.logs || [];
+
+        if (logs.length === 0) {
+            container.innerHTML = '<div class="lb-empty">No games played yet.</div>';
+            return;
+        }
+
+        let totalRedWins = 0, totalBlackWins = 0, totalDraws = 0;
+        const stats = {};
+
+        for (const log of logs) {
+            const redWin = log.result.includes('red wins');
+            const blackWin = log.result.includes('black wins');
+            if (redWin) totalRedWins++;
+            else if (blackWin) totalBlackWins++;
+            else totalDraws++;
+
+            for (const label of [log.red_label, log.black_label]) {
+                if (!label) continue;
+                if (!stats[label]) stats[label] = {
+                    wins: 0, losses: 0, draws: 0,
+                    asRed: { wins: 0, losses: 0, draws: 0, total: 0 },
+                    asBlack: { wins: 0, losses: 0, draws: 0, total: 0 },
+                };
+            }
+
+            const rs = stats[log.red_label];
+            const bs = stats[log.black_label];
+            if (rs) rs.asRed.total++;
+            if (bs) bs.asBlack.total++;
+
+            if (redWin) {
+                if (rs) { rs.wins++; rs.asRed.wins++; }
+                if (bs) { bs.losses++; bs.asBlack.losses++; }
+            } else if (blackWin) {
+                if (bs) { bs.wins++; bs.asBlack.wins++; }
+                if (rs) { rs.losses++; rs.asRed.losses++; }
+            } else {
+                if (rs) { rs.draws++; rs.asRed.draws++; }
+                if (bs) { bs.draws++; bs.asBlack.draws++; }
+            }
+        }
+
+        const entries = Object.entries(stats).map(([name, s]) => {
+            const total = s.wins + s.losses + s.draws;
+            const winRate = total > 0 ? s.wins / total : 0;
+            return { name, ...s, total, winRate };
+        });
+        entries.sort((a, b) => b.wins - a.wins || b.winRate - a.winRate || a.losses - b.losses);
+
+        let html = `<div class="lb-summary">
+            <div class="lb-summary-item"><div class="lb-summary-val">${logs.length}</div><div class="lb-summary-label">Total Games</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${entries.length}</div><div class="lb-summary-label">Players</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${totalRedWins}</div><div class="lb-summary-label">Red Wins</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${totalBlackWins}</div><div class="lb-summary-label">Black Wins</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${totalDraws}</div><div class="lb-summary-label">Draws</div></div>
+        </div>`;
+
+        html += `<table class="lb-table"><thead><tr>
+            <th class="num">#</th>
+            <th>Player</th>
+            <th class="stat">W</th><th class="stat">L</th><th class="stat">D</th>
+            <th class="rate">Win%</th>
+            <th class="side-group">As Red</th>
+            <th class="side-group">As Black</th>
+        </tr></thead><tbody>`;
+
+        for (let i = 0; i < entries.length; i++) {
+            const e = entries[i];
+            const rank = i + 1;
+            const rankCls = rank <= 3 ? ` lb-rank-${rank}` : '';
+            const pct = Math.round(e.winRate * 100);
+            const rateCls = pct >= 60 ? 'high' : pct >= 40 ? 'mid' : 'low';
+
+            const redPct = e.asRed.total > 0 ? Math.round(e.asRed.wins / e.asRed.total * 100) : 0;
+            const blackPct = e.asBlack.total > 0 ? Math.round(e.asBlack.wins / e.asBlack.total * 100) : 0;
+
+            html += `<tr>
+                <td class="num${rankCls}">${rank}</td>
+                <td>
+                    <div class="lb-player-name" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</div>
+                    <div class="lb-player-games">${e.total} games</div>
+                </td>
+                <td class="stat lb-stat-w">${e.wins}</td>
+                <td class="stat lb-stat-l">${e.losses}</td>
+                <td class="stat lb-stat-d">${e.draws}</td>
+                <td class="rate">
+                    <div class="lb-rate-bar">
+                        <span class="lb-rate-num ${rateCls}">${pct}%</span>
+                        <div class="lb-bar-bg"><div class="lb-bar-fill ${rateCls}" style="width:${pct}%"></div></div>
+                    </div>
+                </td>
+                <td class="stat"><div class="lb-side-detail">${e.asRed.wins}W ${e.asRed.losses}L ${e.asRed.draws}D</div><div class="lb-side-detail">Win ${redPct}% (${e.asRed.total} games)</div></td>
+                <td class="stat"><div class="lb-side-detail">${e.asBlack.wins}W ${e.asBlack.losses}L ${e.asBlack.draws}D</div><div class="lb-side-detail">Win ${blackPct}% (${e.asBlack.total} games)</div></td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<div class="lb-empty">Failed to load.</div>';
+    }
 }

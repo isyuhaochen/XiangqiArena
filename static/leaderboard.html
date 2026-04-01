@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaderboard - BattleChess</title>
+    <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
+    <style>
+        :root {
+            --bg: #f5f0e6;
+            --card-bg: #fffdf7;
+            --border: #ece6da;
+            --text-primary: #2c2c2c;
+            --text-secondary: #8a8070;
+            --accent: #c07830;
+            --red-color: #b41e1e;
+            --black-color: #1a1a1a;
+            --shadow: 0 2px 12px rgba(60, 40, 10, 0.08);
+            --font-main: 'Segoe UI', 'Noto Sans SC', system-ui, sans-serif;
+            --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: var(--bg); font-family: var(--font-main); color: var(--text-primary); min-height: 100vh; }
+
+        header {
+            background: linear-gradient(135deg, #3a2a18, #5c3d1e);
+            color: #f6e0b5;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        }
+        .header-logo { width: 40px; height: 40px; border-radius: 10px; }
+        header h1 { font-size: 20px; font-weight: 800; }
+        header .subtitle { font-size: 12px; opacity: 0.7; }
+        .header-spacer { flex: 1; }
+        .header-back {
+            font-size: 13px;
+            color: rgba(246,224,181,0.85);
+            text-decoration: none;
+            padding: 6px 14px;
+            border-radius: 6px;
+            transition: background 0.15s, color 0.15s;
+        }
+        .header-back:hover { background: rgba(255,255,255,0.12); color: #fff; }
+
+        main {
+            max-width: 800px;
+            margin: 24px auto;
+            padding: 0 16px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        .card-header {
+            padding: 16px 20px;
+            border-bottom: 2px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .card-header h2 { font-size: 18px; font-weight: 700; }
+        .total-games { font-size: 12px; color: var(--text-secondary); }
+        .btn-refresh {
+            border: 1px solid var(--border);
+            background: var(--card-bg);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-refresh:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* Table */
+        .lb-table { width: 100%; border-collapse: collapse; }
+        .lb-table th {
+            text-align: left;
+            padding: 10px 16px;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+            background: #faf8f2;
+        }
+        .lb-table th.num { text-align: center; width: 50px; }
+        .lb-table th.stat { text-align: center; width: 60px; }
+        .lb-table th.rate { text-align: center; width: 80px; }
+
+        .lb-table td {
+            padding: 12px 16px;
+            font-size: 13px;
+            border-bottom: 1px solid #f0ebe2;
+            vertical-align: middle;
+        }
+        .lb-table tr:last-child td { border-bottom: none; }
+        .lb-table tr:hover td { background: #faf3e6; }
+
+        .lb-table td.num { text-align: center; font-weight: 700; font-size: 15px; color: var(--text-secondary); }
+        .lb-table td.stat { text-align: center; font-family: var(--font-mono); font-size: 13px; }
+        .lb-table td.rate { text-align: center; font-weight: 700; font-size: 14px; }
+
+        .rank-1 { color: #d4a017; }
+        .rank-2 { color: #8a8a8a; }
+        .rank-3 { color: #b87333; }
+
+        .player-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .player-games {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .stat-w { color: #2e7d32; }
+        .stat-l { color: var(--red-color); }
+        .stat-d { color: var(--text-secondary); }
+
+        .rate-high { color: #2e7d32; }
+        .rate-mid  { color: var(--accent); }
+        .rate-low  { color: #999; }
+
+        /* Win rate bar */
+        .rate-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            justify-content: center;
+        }
+        .rate-bar-bg {
+            width: 40px;
+            height: 6px;
+            border-radius: 3px;
+            background: #ece6da;
+            overflow: hidden;
+        }
+        .rate-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+        .rate-bar-fill.high { background: #4caf50; }
+        .rate-bar-fill.mid  { background: var(--accent); }
+        .rate-bar-fill.low  { background: #bbb; }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+            font-size: 15px;
+        }
+
+        /* Summary cards */
+        .summary-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .summary-card {
+            flex: 1;
+            background: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 14px 16px;
+            text-align: center;
+        }
+        .summary-card .val {
+            font-size: 24px;
+            font-weight: 800;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+        }
+        .summary-card .label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <img class="header-logo" src="/static/logo.png" alt="BattleChess logo">
+        <div>
+            <h1>Leaderboard</h1>
+            <span class="subtitle">BattleChess - Xiangqi Arena</span>
+        </div>
+        <div class="header-spacer"></div>
+        <a href="/" class="header-back">&larr; Back to Arena</a>
+    </header>
+
+    <main>
+        <div class="summary-row" id="summary-row">
+            <div class="summary-card"><div class="val" id="sum-total">-</div><div class="label">Total Games</div></div>
+            <div class="summary-card"><div class="val" id="sum-players">-</div><div class="label">Players</div></div>
+            <div class="summary-card"><div class="val" id="sum-red">-</div><div class="label">Red Wins</div></div>
+            <div class="summary-card"><div class="val" id="sum-black">-</div><div class="label">Black Wins</div></div>
+            <div class="summary-card"><div class="val" id="sum-draw">-</div><div class="label">Draws</div></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2>Player Rankings</h2>
+                <button class="btn-refresh" id="btn-refresh" onclick="loadData()">&#x21bb; Refresh</button>
+            </div>
+            <div id="table-container">
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+        async function loadData() {
+            const container = document.getElementById('table-container');
+            try {
+                const resp = await fetch('/api/logs');
+                const data = await resp.json();
+                const logs = data.logs || [];
+
+                if (logs.length === 0) {
+                    container.innerHTML = '<div class="empty-state">No games played yet.</div>';
+                    return;
+                }
+
+                // Global stats
+                let totalRedWins = 0, totalBlackWins = 0, totalDraws = 0;
+                const stats = {};
+
+                for (const log of logs) {
+                    const redWin = log.result.includes('red wins');
+                    const blackWin = log.result.includes('black wins');
+
+                    if (redWin) totalRedWins++;
+                    else if (blackWin) totalBlackWins++;
+                    else totalDraws++;
+
+                    for (const label of [log.red_label, log.black_label]) {
+                        if (!label) continue;
+                        if (!stats[label]) stats[label] = { wins: 0, losses: 0, draws: 0 };
+                    }
+
+                    if (redWin) {
+                        stats[log.red_label].wins++;
+                        stats[log.black_label].losses++;
+                    } else if (blackWin) {
+                        stats[log.black_label].wins++;
+                        stats[log.red_label].losses++;
+                    } else {
+                        if (stats[log.red_label]) stats[log.red_label].draws++;
+                        if (stats[log.black_label]) stats[log.black_label].draws++;
+                    }
+                }
+
+                // Summary
+                document.getElementById('sum-total').textContent = logs.length;
+                document.getElementById('sum-players').textContent = Object.keys(stats).length;
+                document.getElementById('sum-red').textContent = totalRedWins;
+                document.getElementById('sum-black').textContent = totalBlackWins;
+                document.getElementById('sum-draw').textContent = totalDraws;
+
+                // Sort
+                const entries = Object.entries(stats).map(([name, s]) => {
+                    const total = s.wins + s.losses + s.draws;
+                    const winRate = total > 0 ? s.wins / total : 0;
+                    return { name, ...s, total, winRate };
+                });
+                entries.sort((a, b) => b.wins - a.wins || b.winRate - a.winRate || a.losses - b.losses);
+
+                // Render table
+                let html = `<table class="lb-table">
+                    <thead><tr>
+                        <th class="num">#</th>
+                        <th>Player</th>
+                        <th class="stat">W</th>
+                        <th class="stat">L</th>
+                        <th class="stat">D</th>
+                        <th class="rate">Win Rate</th>
+                    </tr></thead><tbody>`;
+
+                entries.forEach((e, i) => {
+                    const rank = i + 1;
+                    const rankCls = rank <= 3 ? ` rank-${rank}` : '';
+                    const pct = Math.round(e.winRate * 100);
+                    const rateCls = pct >= 60 ? 'high' : pct >= 40 ? 'mid' : 'low';
+
+                    html += `<tr>
+                        <td class="num${rankCls}">${rank}</td>
+                        <td>
+                            <div class="player-name">${escapeHtml(e.name)}</div>
+                            <div class="player-games">${e.total} games</div>
+                        </td>
+                        <td class="stat stat-w">${e.wins}</td>
+                        <td class="stat stat-l">${e.losses}</td>
+                        <td class="stat stat-d">${e.draws}</td>
+                        <td class="rate">
+                            <div class="rate-bar">
+                                <span class="rate-${rateCls}">${pct}%</span>
+                                <div class="rate-bar-bg"><div class="rate-bar-fill ${rateCls}" style="width:${pct}%"></div></div>
+                            </div>
+                        </td>
+                    </tr>`;
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = '<div class="empty-state">Failed to load data.</div>';
+            }
+        }
+
+        loadData();
+        // Auto-refresh every 30 seconds
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>

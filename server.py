@@ -1262,6 +1262,7 @@ async def reset_game(game_id: str):
     game.pause_event.set()
     game.human_move_event.set()  # Unblock any waiting human move
     game.broadcast("status", {"status": "reset"})
+    del games[game_id]
     return {"status": "reset"}
 
 
@@ -1347,6 +1348,22 @@ async def stream_events(game_id: str, request: Request):
 
 # --- Game log history APIs ---
 
+@app.get("/api/games")
+async def list_active_games():
+    """List all active game sessions (not yet cleaned up)."""
+    result = []
+    for gid, g in games.items():
+        result.append({
+            "id": gid,
+            "status": g.status,
+            "red_label": _player_label(g.red_config),
+            "black_label": _player_label(g.black_config),
+            "move_count": len(g.move_history),
+            "winner": g.winner,
+            "reason": g.reason,
+        })
+    return {"games": result}
+
 @app.get("/api/logs")
 async def list_game_logs():
     """List all game log files with metadata (no moves)."""
@@ -1401,6 +1418,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/leaderboard")
+async def leaderboard():
+    return FileResponse(os.path.join(STATIC_DIR, "leaderboard.html"))
 
 
 if __name__ == "__main__":
