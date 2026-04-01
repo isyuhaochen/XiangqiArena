@@ -302,6 +302,111 @@ def write_game_log(game):
         f.write("\n".join(lines) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# Log file parser (for history replay)
+# ---------------------------------------------------------------------------
+
+_RE_GAME_LINE = re.compile(r"^Game:\s+(\S+)\s+\|\s+(.+)$")
+_RE_PLAYERS_LINE = re.compile(r"^Red:\s+(.+?)\s{2,}vs\s{2,}Black:\s+(.+)$")
+_RE_INITIAL_FEN = re.compile(r"^Initial FEN:\s+(.+)$")
+_RE_RESULT = re.compile(r"^Result:\s+(.+)$")
+_RE_MOVES_HEADER = re.compile(r"^Moves\s+\((\d+)\):")
+_RE_MOVE_LINE = re.compile(
+    r"^\s*#(\d+)\s+(red|black):\s+(\S+)"
+    r"(?:\s+\(([^)]+)\))?"
+    r"(?:\s+x(\S+))?$"
+)
+
+
+def parse_game_log(filepath: str, include_moves: bool = True) -> dict:
+    """Parse a .log file and return structured game data."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        raw_lines = f.readlines()
+
+    result = {
+        "filename": os.path.basename(filepath),
+        "game_id": "",
+        "timestamp": "",
+        "red_label": "",
+        "black_label": "",
+        "initial_fen": "",
+        "result": "",
+        "move_count": 0,
+    }
+
+    in_moves = False
+    raw_moves = []
+
+    for line in raw_lines:
+        line = line.rstrip("\n")
+
+        m = _RE_GAME_LINE.match(line)
+        if m:
+            result["game_id"] = m.group(1)
+            result["timestamp"] = m.group(2).strip()
+            continue
+
+        m = _RE_PLAYERS_LINE.match(line)
+        if m:
+            result["red_label"] = m.group(1).strip()
+            result["black_label"] = m.group(2).strip()
+            continue
+
+        m = _RE_INITIAL_FEN.match(line)
+        if m:
+            result["initial_fen"] = m.group(1).strip()
+            continue
+
+        m = _RE_RESULT.match(line)
+        if m:
+            result["result"] = m.group(1).strip()
+            continue
+
+        m = _RE_MOVES_HEADER.match(line)
+        if m:
+            result["move_count"] = int(m.group(1))
+            in_moves = True
+            continue
+
+        if in_moves:
+            m = _RE_MOVE_LINE.match(line)
+            if m:
+                raw_moves.append({
+                    "number": int(m.group(1)),
+                    "side": m.group(2),
+                    "move": m.group(3),
+                    "move_zh": m.group(4) or None,
+                    "captured": m.group(5) or None,
+                })
+            else:
+                # End of moves section
+                in_moves = False
+
+    if not include_moves:
+        return result
+
+    # Replay moves to compute FEN after each step
+    moves_with_fen = []
+    if result["initial_fen"]:
+        try:
+            board = Board(result["initial_fen"])
+            for rm in raw_moves:
+                try:
+                    move_result = board.make_move(rm["move"])
+                    rm["fen"] = move_result.get("fen_after", board.to_fen())
+                except Exception:
+                    rm["fen"] = board.to_fen()
+                moves_with_fen.append(rm)
+        except Exception:
+            # If board init fails, include moves without FEN
+            for rm in raw_moves:
+                rm["fen"] = ""
+                moves_with_fen.append(rm)
+
+    result["moves"] = moves_with_fen
+    return result
+
+
 class PlayerConfig(BaseModel):
     type: str = "human"  # human | random | llm | pikafish
     preset: Optional[str] = None
@@ -1238,6 +1343,44 @@ async def stream_events(game_id: str, request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# --- Game log history APIs ---
+
+@app.get("/api/logs")
+async def list_game_logs():
+    """List all game log files with metadata (no moves)."""
+    logs = []
+    try:
+        for fname in os.listdir(LOG_DIR):
+            if not fname.endswith(".log"):
+                continue
+            fpath = os.path.join(LOG_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                entry = parse_game_log(fpath, include_moves=False)
+                logs.append(entry)
+            except Exception:
+                continue
+    except FileNotFoundError:
+        pass
+    logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return {"logs": logs}
+
+
+@app.get("/api/logs/{filename}")
+async def get_game_log(filename: str):
+    """Parse and return a single game log with all moves and FENs."""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    fpath = os.path.join(LOG_DIR, filename)
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Log not found")
+    try:
+        return parse_game_log(fpath, include_moves=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/validate-fen")

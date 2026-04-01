@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BattleChess - Xiangqi Arena</title>
     <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
-    <link rel="stylesheet" href="/static/style.css?v=20260330-03">
+    <link rel="stylesheet" href="/static/style.css?v=20260331-02">
 </head>
 <body>
     <header id="header">
@@ -57,6 +57,7 @@
             <div class="tab-bar">
                 <button class="tab-btn active" data-tab="log">记录</button>
                 <button class="tab-btn" data-tab="settings">设置</button>
+                <button class="tab-btn" data-tab="history">历史</button>
             </div>
 
             <!-- Log Tab -->
@@ -248,6 +249,35 @@
                     </div>
                 </div>
             </div>
+
+            <!-- History Tab -->
+            <div class="tab-content" id="tab-history">
+                <!-- List view -->
+                <div id="history-list-view">
+                    <div class="history-toolbar">
+                        <button class="btn-small" id="btn-history-refresh" title="刷新">&#x21bb; 刷新</button>
+                    </div>
+                    <div id="history-list" class="history-list"></div>
+                </div>
+
+                <!-- Detail view (hidden by default) -->
+                <div id="history-detail-view" style="display: none;">
+                    <div class="history-detail-header">
+                        <button class="btn-small" id="btn-history-back">&larr; 返回</button>
+                        <div class="history-detail-info" id="history-detail-info"></div>
+                    </div>
+                    <div class="history-move-nav">
+                        <button class="btn-small" id="btn-hist-first" title="第一步">&#x23EE;</button>
+                        <button class="btn-small" id="btn-hist-prev" title="上一步">&#x25C0;</button>
+                        <span id="hist-position-label">初始局面</span>
+                        <button class="btn-small" id="btn-hist-next" title="下一步">&#x25B6;</button>
+                        <button class="btn-small" id="btn-hist-last" title="最后一步">&#x23ED;</button>
+                        <span class="nav-separator"></span>
+                        <button class="btn-small btn-autoplay" id="btn-hist-autoplay" title="自动播放">&#x25B6; Auto</button>
+                    </div>
+                    <div id="history-move-list" class="history-move-list"></div>
+                </div>
+            </div>
         </div>
     </main>
 
@@ -260,7 +290,7 @@
         </div>
     </div>
 
-    <script src="/static/board.js?v=20260330-02"></script>
-    <script src="/static/app.js?v=20260330-04"></script>
+    <script src="/static/board.js?v=20260331-02"></script>
+    <script src="/static/app.js?v=20260331-02"></script>
 </body>
 </html>

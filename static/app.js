@@ -17,6 +17,11 @@ const state = {
     eventSource: null,
     viewIndex: -1, // -1 = live view, otherwise index into moveHistory for back/forward
     scoreType: 'Elo',
+    // History replay
+    historyMode: false,
+    historyGame: null,
+    historyViewIndex: -1, // 0 = initial position, 1..N = after move N
+    historyAutoplayTimer: null,
 };
 
 let renderer = null;
@@ -76,6 +81,13 @@ function switchTab(tabName) {
     document.querySelectorAll('.tab-content').forEach(content => {
         content.classList.toggle('active', content.id === `tab-${tabName}`);
     });
+    if (tabName === 'history') {
+        loadHistoryList();
+    } else if (state.historyMode) {
+        closeHistoryDetail();
+    } else {
+        stopHistoryAutoplay();
+    }
 }
 
 function applyLlmOptionDefaults(side, presetName = null) {
@@ -355,6 +367,46 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Init eval chart tooltip
     _initEvalChartTooltip();
+
+    // History tab buttons
+    document.getElementById('btn-history-refresh').addEventListener('click', loadHistoryList);
+    document.getElementById('btn-history-back').addEventListener('click', closeHistoryDetail);
+    document.getElementById('btn-hist-first').addEventListener('click', historyGoFirst);
+    document.getElementById('btn-hist-prev').addEventListener('click', historyStepPrev);
+    document.getElementById('btn-hist-next').addEventListener('click', historyStepNext);
+    document.getElementById('btn-hist-last').addEventListener('click', historyGoLast);
+    document.getElementById('btn-hist-autoplay').addEventListener('click', historyToggleAutoplay);
+
+    // History keyboard navigation
+    document.addEventListener('keydown', (e) => {
+        if (!state.historyMode) return;
+        const activeTab = document.querySelector('.tab-btn.active');
+        if (!activeTab || activeTab.dataset.tab !== 'history') return;
+        switch (e.key) {
+            case 'ArrowLeft':
+            case 'ArrowUp':
+                e.preventDefault();
+                historyStepPrev();
+                break;
+            case 'ArrowRight':
+            case 'ArrowDown':
+                e.preventDefault();
+                historyStepNext();
+                break;
+            case 'Home':
+                e.preventDefault();
+                historyGoFirst();
+                break;
+            case 'End':
+                e.preventDefault();
+                historyGoLast();
+                break;
+            case 'Escape':
+                e.preventDefault();
+                closeHistoryDetail();
+                break;
+        }
+    });
 });
 
 // --- Presets ---
@@ -657,7 +709,14 @@ function onLoadFEN() {
 
 function onExportFEN() {
     let fen;
-    if (state.viewIndex === -1) {
+    if (state.historyMode && state.historyGame) {
+        if (state.historyViewIndex === 0) {
+            fen = state.historyGame.initial_fen || DEFAULT_FEN;
+        } else {
+            const m = (state.historyGame.moves || [])[state.historyViewIndex - 1];
+            fen = m ? m.fen : DEFAULT_FEN;
+        }
+    } else if (state.viewIndex === -1) {
         fen = state.fen;
     } else if (state.viewIndex === 0) {
         fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
@@ -740,7 +799,7 @@ async function fetchLegalMovesForPiece(col, row) {
 }
 
 function updateHumanInteractive() {
-    if (state.status !== 'playing' || state.viewIndex !== -1) {
+    if (state.historyMode || state.status !== 'playing' || state.viewIndex !== -1) {
         renderer.humanInteractive = false;
         return;
     }
@@ -768,7 +827,7 @@ function connectSSE(gameId) {
         // Finalize current log entry with move info
         finalizeLogEntry(data);
 
-        if (state.viewIndex === -1) {
+        if (state.viewIndex === -1 && !state.historyMode) {
             renderer.render(state.fen, data.move);
         }
         updateTurnIndicator();
@@ -1522,4 +1581,239 @@ function showGameOver(winner, reason) {
 
 function hideGameOver() {
     document.getElementById('game-over-banner').classList.add('hidden');
+}
+
+// --- History replay ---
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function loadHistoryList() {
+    const listEl = document.getElementById('history-list');
+    listEl.innerHTML = '<div class="history-empty">Loading...</div>';
+    try {
+        const resp = await fetch('/api/logs');
+        const data = await resp.json();
+        const logs = data.logs || [];
+        if (logs.length === 0) {
+            listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
+            return;
+        }
+        listEl.innerHTML = '';
+        for (const log of logs) {
+            const item = document.createElement('div');
+            item.className = 'history-item';
+            const resultClass = log.result.includes('red wins') ? 'result-red'
+                : log.result.includes('black wins') ? 'result-black'
+                : 'result-draw';
+            item.innerHTML = `
+                <div class="hist-meta">
+                    <span class="hist-date">${escapeHtml(log.timestamp)}</span>
+                    <span class="hist-moves-count">${log.move_count} moves</span>
+                </div>
+                <div class="hist-players">
+                    <span class="red-name">${escapeHtml(log.red_label)}</span>
+                    <span class="vs">vs</span>
+                    <span class="black-name">${escapeHtml(log.black_label)}</span>
+                </div>
+                <span class="hist-result ${resultClass}">${escapeHtml(log.result)}</span>
+            `;
+            item.addEventListener('click', () => openHistoryDetail(log.filename));
+            listEl.appendChild(item);
+        }
+    } catch (e) {
+        listEl.innerHTML = '<div class="history-empty">Failed to load history.</div>';
+    }
+}
+
+async function openHistoryDetail(filename) {
+    const listView = document.getElementById('history-list-view');
+    const detailView = document.getElementById('history-detail-view');
+    const infoEl = document.getElementById('history-detail-info');
+    const moveListEl = document.getElementById('history-move-list');
+
+    infoEl.textContent = 'Loading...';
+    moveListEl.innerHTML = '';
+    listView.style.display = 'none';
+    detailView.style.display = '';
+
+    try {
+        const resp = await fetch(`/api/logs/${encodeURIComponent(filename)}`);
+        if (!resp.ok) throw new Error('Failed to load');
+        const game = await resp.json();
+
+        state.historyMode = true;
+        state.historyGame = game;
+        state.historyViewIndex = 0;
+
+        // Header info
+        infoEl.innerHTML = `
+            <span class="detail-players">${escapeHtml(game.red_label)} vs ${escapeHtml(game.black_label)}</span>
+            &nbsp;|&nbsp;${escapeHtml(game.timestamp)}
+        `;
+
+        // Build move list
+        moveListEl.innerHTML = '';
+        const moves = game.moves || [];
+        for (let i = 0; i < moves.length; i++) {
+            const m = moves[i];
+            const item = document.createElement('div');
+            item.className = 'hist-move-item';
+            item.dataset.index = i + 1;
+            const zhPart = m.move_zh ? `<span class="move-zh">${escapeHtml(m.move_zh)}</span>` : '';
+            const capturePart = m.captured ? `<span class="move-capture">x${escapeHtml(m.captured)}</span>` : '';
+            item.innerHTML = `
+                <span class="move-num">#${m.number}</span>
+                <span class="move-side-dot ${m.side}"></span>
+                <span class="move-text">${escapeHtml(m.move)}</span>
+                ${zhPart}
+                ${capturePart}
+            `;
+            item.addEventListener('click', () => historyJumpTo(i + 1));
+            moveListEl.appendChild(item);
+        }
+
+        // Render initial position
+        renderer.clearSelection();
+        historyRenderPosition();
+        updateHistoryNavUI();
+        updateHumanInteractive();
+    } catch (e) {
+        infoEl.textContent = 'Failed to load game data.';
+    }
+}
+
+function historyJumpTo(index) {
+    if (!state.historyGame) return;
+    stopHistoryAutoplay();
+    const maxIndex = (state.historyGame.moves || []).length;
+    state.historyViewIndex = Math.max(0, Math.min(index, maxIndex));
+    renderer.clearSelection();
+    historyRenderPosition();
+    updateHistoryNavUI();
+}
+
+function historyStepPrev() {
+    if (state.historyViewIndex > 0) {
+        historyJumpTo(state.historyViewIndex - 1);
+    }
+}
+
+function historyStepNext() {
+    if (!state.historyGame) return;
+    const maxIndex = (state.historyGame.moves || []).length;
+    if (state.historyViewIndex < maxIndex) {
+        historyJumpTo(state.historyViewIndex + 1);
+    }
+}
+
+function historyGoFirst() {
+    historyJumpTo(0);
+}
+
+function historyGoLast() {
+    if (!state.historyGame) return;
+    historyJumpTo((state.historyGame.moves || []).length);
+}
+
+function historyRenderPosition() {
+    if (!state.historyGame) return;
+    const moves = state.historyGame.moves || [];
+    if (state.historyViewIndex === 0) {
+        renderer.render(state.historyGame.initial_fen);
+    } else {
+        const m = moves[state.historyViewIndex - 1];
+        if (m) {
+            renderer.render(m.fen, m.move);
+        }
+    }
+}
+
+function updateHistoryNavUI() {
+    if (!state.historyGame) return;
+    const moves = state.historyGame.moves || [];
+    const maxIndex = moves.length;
+    const label = document.getElementById('hist-position-label');
+
+    if (state.historyViewIndex === 0) {
+        label.textContent = 'Initial';
+    } else {
+        const m = moves[state.historyViewIndex - 1];
+        label.textContent = `#${m.number} ${m.move}`;
+    }
+
+    document.getElementById('btn-hist-first').disabled = state.historyViewIndex === 0;
+    document.getElementById('btn-hist-prev').disabled = state.historyViewIndex === 0;
+    document.getElementById('btn-hist-next').disabled = state.historyViewIndex >= maxIndex;
+    document.getElementById('btn-hist-last').disabled = state.historyViewIndex >= maxIndex;
+
+    // Highlight active move item
+    const moveListEl = document.getElementById('history-move-list');
+    moveListEl.querySelectorAll('.hist-move-item').forEach(el => {
+        el.classList.toggle('active', parseInt(el.dataset.index) === state.historyViewIndex);
+    });
+
+    // Scroll active item into view
+    const activeItem = moveListEl.querySelector('.hist-move-item.active');
+    if (activeItem) {
+        activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+}
+
+function closeHistoryDetail() {
+    stopHistoryAutoplay();
+    state.historyMode = false;
+    state.historyGame = null;
+    state.historyViewIndex = -1;
+
+    const listView = document.getElementById('history-list-view');
+    const detailView = document.getElementById('history-detail-view');
+    listView.style.display = '';
+    detailView.style.display = 'none';
+
+    // Restore the board to the current live game position
+    renderer.clearSelection();
+    showViewIndex();
+    updateHumanInteractive();
+}
+
+function stopHistoryAutoplay() {
+    if (state.historyAutoplayTimer) {
+        clearInterval(state.historyAutoplayTimer);
+        state.historyAutoplayTimer = null;
+    }
+    const btn = document.getElementById('btn-hist-autoplay');
+    if (btn) {
+        btn.textContent = '\u25B6 Auto';
+        btn.classList.remove('playing');
+    }
+}
+
+function historyToggleAutoplay() {
+    if (state.historyAutoplayTimer) {
+        stopHistoryAutoplay();
+        return;
+    }
+    if (!state.historyGame) return;
+    const maxIndex = (state.historyGame.moves || []).length;
+    if (state.historyViewIndex >= maxIndex) return; // already at end
+
+    const btn = document.getElementById('btn-hist-autoplay');
+    btn.textContent = '\u23F8 Stop';
+    btn.classList.add('playing');
+
+    state.historyAutoplayTimer = setInterval(() => {
+        const max = (state.historyGame.moves || []).length;
+        if (!state.historyGame || state.historyViewIndex >= max) {
+            stopHistoryAutoplay();
+            return;
+        }
+        state.historyViewIndex++;
+        renderer.clearSelection();
+        historyRenderPosition();
+        updateHistoryNavUI();
+    }, 1000);
 }

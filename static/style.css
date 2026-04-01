@@ -468,3 +468,191 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
         text-align: center;
     }
 }
+
+/* History Tab */
+#tab-history {
+    overflow: hidden;
+}
+#history-list-view, #history-detail-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+.history-toolbar {
+    padding: 8px 10px;
+    display: flex;
+    justify-content: flex-end;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* History list */
+.history-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 6px 10px;
+}
+.history-item {
+    border: 1px solid #ece6da;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    background: var(--card-bg);
+}
+.history-item:hover {
+    background: #faf3e6;
+    border-color: var(--accent);
+}
+.hist-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+.hist-date {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+.hist-moves-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: #f0ebe2;
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+.hist-players {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.hist-players .red-name { color: var(--red-color); }
+.hist-players .vs { color: var(--text-secondary); font-weight: 400; margin: 0 4px; font-size: 12px; }
+.hist-players .black-name { color: var(--black-color); }
+.hist-result {
+    font-size: 12px;
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 8px;
+    font-weight: 500;
+}
+.hist-result.result-red { background: rgba(180,30,30,0.1); color: var(--red-color); }
+.hist-result.result-black { background: rgba(26,26,26,0.1); color: var(--black-color); }
+.hist-result.result-draw { background: rgba(192,120,48,0.1); color: var(--accent); }
+.history-empty {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 40px 20px;
+    font-size: 14px;
+}
+
+/* History detail header */
+.history-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+.history-detail-info {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.history-detail-info .detail-players { font-weight: 600; color: var(--text-primary); }
+
+/* History move navigation */
+.history-move-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+    background: #faf8f2;
+}
+#hist-position-label {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    min-width: 90px;
+    text-align: center;
+}
+.nav-separator {
+    width: 1px;
+    height: 18px;
+    background: var(--border-color);
+    margin: 0 2px;
+}
+.btn-autoplay {
+    font-size: 11px;
+    padding: 2px 8px;
+}
+.btn-autoplay.playing {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+/* History move list */
+.history-move-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 4px 0;
+}
+.hist-move-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.1s;
+    border-left: 3px solid transparent;
+}
+.hist-move-item:hover {
+    background: #f5f0e6;
+}
+.hist-move-item.active {
+    background: var(--accent-light);
+    border-left-color: var(--accent);
+    font-weight: 600;
+}
+.move-num {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    font-size: 12px;
+    min-width: 32px;
+    text-align: right;
+}
+.move-side-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.move-side-dot.red { background: var(--red-color); }
+.move-side-dot.black { background: var(--black-color); }
+.move-text {
+    font-family: var(--font-mono);
+}
+.move-zh {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.move-capture {
+    font-size: 11px;
+    color: #c05020;
+    margin-left: auto;
+}
