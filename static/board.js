@@ -31,7 +31,7 @@ const MARKER_POSITIONS = [
 ];
 
 class BoardRenderer {
-    constructor(canvas, cellSize = 58, margin = 42) {
+    constructor(canvas, cellSize = 58, margin = 42, options = {}) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.cellSize = cellSize;
@@ -45,7 +45,10 @@ class BoardRenderer {
         const w = this.leftPad + this.rightPad + cellSize * 8;
         const h = this.topPad + this.bottomPad + cellSize * 9;
 
-        this.dpr = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+        const requestedDpr = options.devicePixelRatio;
+        this.dpr = requestedDpr == null
+            ? Math.max(2, Math.ceil(window.devicePixelRatio || 1))
+            : Math.max(1, requestedDpr);
         canvas.width = w * this.dpr;
         canvas.height = h * this.dpr;
         canvas.style.width = w + 'px';
@@ -65,7 +68,9 @@ class BoardRenderer {
         this.humanInteractive = false; // whether clicks are enabled
 
         // Click handler
-        canvas.addEventListener('click', (e) => this._onClick(e));
+        if (options.interactive !== false) {
+            canvas.addEventListener('click', (e) => this._onClick(e));
+        }
     }
 
     /** Convert board coords (col 0-8, row 0-9) to pixel coords. Row 0 = bottom (red). */

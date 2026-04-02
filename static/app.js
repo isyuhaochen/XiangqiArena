@@ -17,6 +17,11 @@ let historyMode = false;
 let historyGame = null;
 let historyViewIndex = -1;
 let historyAutoplayTimer = null;
+let historyGifExportInProgress = false;
+const HISTORY_GIF_FRAME_DELAY_MS = 700;
+const HISTORY_GIF_INITIAL_DELAY_MS = 700;
+const HISTORY_GIF_FINAL_DELAY_MS = 1500;
+const HISTORY_GIF_PROGRESS_YIELD_EVERY = 4;
 
 function createGameState(gameId, config = {}) {
     return {
@@ -516,6 +521,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-hist-next').addEventListener('click', historyStepNext);
     document.getElementById('btn-hist-last').addEventListener('click', historyGoLast);
     document.getElementById('btn-hist-autoplay').addEventListener('click', historyToggleAutoplay);
+    document.getElementById('btn-hist-export-gif').addEventListener('click', historyExportGif);
 
     // History keyboard navigation
     document.addEventListener('keydown', (e) => {
@@ -1227,6 +1233,31 @@ function updateTurnIndicator() {
 
 function setStatus(msg) {
     document.getElementById('status-bar').textContent = msg;
+}
+
+function sanitizeFilenamePart(text) {
+    const cleaned = String(text || '')
+        .trim()
+        .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+        .replace(/\s+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^[ ._]+|[ ._]+$/g, '');
+    return (cleaned || 'unknown').slice(0, 80);
+}
+
+function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function yieldToBrowser() {
+    return new Promise(resolve => window.setTimeout(resolve, 0));
 }
 
 function scheduleRightColumnHeightSync(delayMs = 0) {
@@ -2084,6 +2115,105 @@ function historyToggleAutoplay() {
         historyRenderPosition();
         updateHistoryNavUI();
     }, 1000);
+}
+
+function setHistoryGifButtonState(label = 'GIF', disabled = false, exporting = false) {
+    const btn = document.getElementById('btn-hist-export-gif');
+    if (!btn) return;
+    btn.textContent = label;
+    btn.disabled = disabled;
+    btn.classList.toggle('exporting', exporting);
+}
+
+function buildHistoryGifFilename(game) {
+    const now = new Date();
+    const fallbackTimestamp = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+    ].join('')
+        + '-'
+        + [
+            String(now.getHours()).padStart(2, '0'),
+            String(now.getMinutes()).padStart(2, '0'),
+            String(now.getSeconds()).padStart(2, '0'),
+        ].join('');
+
+    const timestamp = sanitizeFilenamePart(game && game.timestamp ? game.timestamp : fallbackTimestamp);
+    const red = sanitizeFilenamePart(game && game.red_label ? game.red_label : 'red');
+    const black = sanitizeFilenamePart(game && game.black_label ? game.black_label : 'black');
+    return `replay_${timestamp}_red-${red}_vs_black-${black}.gif`;
+}
+
+async function historyExportGif() {
+    if (!historyGame || historyGifExportInProgress) return;
+    if (typeof window.BattleChessGifEncoder !== 'function') {
+        setStatus('GIF export is unavailable in this browser.');
+        return;
+    }
+    if (!renderer) {
+        setStatus('Board renderer is not ready yet.');
+        return;
+    }
+
+    stopHistoryAutoplay();
+    historyGifExportInProgress = true;
+    setHistoryGifButtonState('GIF...', true, true);
+    setStatus('Exporting replay GIF...');
+
+    const exportGame = historyGame;
+    const initialFen = exportGame.initial_fen || DEFAULT_FEN;
+    const moves = Array.isArray(exportGame.moves) ? exportGame.moves.slice() : [];
+    const totalFrames = moves.length + 1;
+
+    try {
+        const exportCanvas = document.createElement('canvas');
+        const exportRenderer = new BoardRenderer(
+            exportCanvas,
+            renderer.cellSize,
+            renderer.margin,
+            { devicePixelRatio: 1, interactive: false }
+        );
+        const encoder = new window.BattleChessGifEncoder(exportRenderer.width, exportRenderer.height);
+
+        const captureFrame = (fen, lastMove, delayMs) => {
+            exportRenderer.selectedSquare = null;
+            exportRenderer.legalMoves = [];
+            exportRenderer.render(fen, lastMove);
+            const frame = exportRenderer.ctx.getImageData(0, 0, exportRenderer.width, exportRenderer.height);
+            encoder.addFrame(frame, delayMs);
+        };
+
+        await yieldToBrowser();
+        captureFrame(initialFen, null, moves.length === 0 ? HISTORY_GIF_FINAL_DELAY_MS : HISTORY_GIF_INITIAL_DELAY_MS);
+        setHistoryGifButtonState(`GIF 1/${totalFrames}`, true, true);
+
+        let lastFen = initialFen;
+        for (let i = 0; i < moves.length; i++) {
+            const move = moves[i] || {};
+            const nextFen = move.fen || lastFen;
+            const delayMs = i === moves.length - 1 ? HISTORY_GIF_FINAL_DELAY_MS : HISTORY_GIF_FRAME_DELAY_MS;
+            captureFrame(nextFen, move.move || null, delayMs);
+            lastFen = nextFen;
+            setHistoryGifButtonState(`GIF ${i + 2}/${totalFrames}`, true, true);
+
+            if ((i + 1) % HISTORY_GIF_PROGRESS_YIELD_EVERY === 0) {
+                await yieldToBrowser();
+            }
+        }
+
+        const blob = encoder.finish();
+        const filename = buildHistoryGifFilename(exportGame);
+        triggerBlobDownload(blob, filename);
+        setStatus(`Replay GIF saved: ${filename}`);
+    } catch (e) {
+        console.error('GIF export failed:', e);
+        const message = e && e.message ? e.message : String(e);
+        setStatus(`GIF export failed: ${message}`);
+    } finally {
+        historyGifExportInProgress = false;
+        setHistoryGifButtonState('GIF', false, false);
+    }
 }
 
 // --- Leaderboard ---

@@ -873,6 +873,14 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     color: #fff;
     border-color: var(--accent);
 }
+.btn-export-gif {
+    font-size: 11px;
+    padding: 2px 8px;
+}
+.btn-export-gif.exporting {
+    opacity: 0.75;
+    cursor: progress;
+}
 
 /* History move list */
 .history-move-list {
