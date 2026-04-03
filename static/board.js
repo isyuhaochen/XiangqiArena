@@ -66,6 +66,7 @@ class BoardRenderer {
         this.currentFen = null;
         this.currentLastMove = null;
         this.humanInteractive = false; // whether clicks are enabled
+        this.flipped = Boolean(options.flipped);
 
         // Click handler
         if (options.interactive !== false) {
@@ -73,20 +74,42 @@ class BoardRenderer {
         }
     }
 
-    /** Convert board coords (col 0-8, row 0-9) to pixel coords. Row 0 = bottom (red). */
+    setFlipped(flipped) {
+        const nextFlipped = Boolean(flipped);
+        if (this.flipped === nextFlipped) return;
+        this.flipped = nextFlipped;
+        if (this.currentFen) this.render(this.currentFen, this.currentLastMove);
+    }
+
+    toggleFlipped() {
+        this.setFlipped(!this.flipped);
+    }
+
+    _screenCol(col) {
+        return this.flipped ? 8 - col : col;
+    }
+
+    _screenRowFromTop(row) {
+        return this.flipped ? row : 9 - row;
+    }
+
+    /** Convert canonical board coords (red at bottom) to the current screen position. */
     toPixel(col, row) {
         return {
-            x: this.leftPad + col * this.cellSize,
-            y: this.topPad + (9 - row) * this.cellSize,
+            x: this.leftPad + this._screenCol(col) * this.cellSize,
+            y: this.topPad + this._screenRowFromTop(row) * this.cellSize,
         };
     }
 
-    /** Convert pixel coords to board coords. Returns {col, row} or null. */
+    /** Convert screen pixels back to canonical board coords. Returns {col, row} or null. */
     fromPixel(px, py) {
-        const col = Math.round((px - this.leftPad) / this.cellSize);
-        const row = 9 - Math.round((py - this.topPad) / this.cellSize);
-        if (col >= 0 && col <= 8 && row >= 0 && row <= 9) {
-            return { col, row };
+        const screenCol = Math.round((px - this.leftPad) / this.cellSize);
+        const screenRowFromTop = Math.round((py - this.topPad) / this.cellSize);
+        if (screenCol >= 0 && screenCol <= 8 && screenRowFromTop >= 0 && screenRowFromTop <= 9) {
+            return {
+                col: this.flipped ? 8 - screenCol : screenCol,
+                row: this.flipped ? screenRowFromTop : 9 - screenRowFromTop,
+            };
         }
         return null;
     }

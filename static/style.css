@@ -314,6 +314,12 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .btn-primary:hover { box-shadow: 0 2px 8px rgba(192,120,48,0.4); }
 .btn-secondary { background: #e8e0d4; color: var(--text-primary); }
 .btn-secondary:hover { background: #ddd4c4; }
+.btn-secondary.is-active {
+    background: linear-gradient(135deg, #c07830, #a06020);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(192,120,48,0.35);
+}
+.btn-secondary.is-active:hover { background: linear-gradient(135deg, #b46e28, #96571c); }
 .btn-danger { background: linear-gradient(135deg, #c04040, #a02020); color: white; }
 .btn-small { padding: 6px 10px; font-size: 11px; }
 .btn-init { background: #4a3520; color: #f6e0b5; }

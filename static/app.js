@@ -68,6 +68,29 @@ let defaultPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
 let rightColumnSyncScheduled = false;
 let rightColumnSyncTimeoutId = null;
+let boardFlipped = false;
+
+function syncFlipBoardButton() {
+    const btn = document.getElementById('btn-flip-board');
+    if (!btn) return;
+    btn.classList.toggle('is-active', boardFlipped);
+    btn.setAttribute('aria-pressed', boardFlipped ? 'true' : 'false');
+    btn.title = boardFlipped
+        ? 'Black-side view is active. Click to restore red-side view.'
+        : 'Flip the board so black is at the bottom.';
+}
+
+function setBoardFlipped(flipped) {
+    boardFlipped = Boolean(flipped);
+    if (renderer) {
+        renderer.setFlipped(boardFlipped);
+    }
+    syncFlipBoardButton();
+}
+
+function toggleBoardFlipped() {
+    setBoardFlipped(!boardFlipped);
+}
 
 function getConfiguredTimerInitialTime() {
     const timerInitialEl = document.getElementById('timer-initial');
@@ -378,6 +401,7 @@ function closeGameTab(gameId) {
 document.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('board-canvas');
     renderer = new BoardRenderer(canvas);
+    syncFlipBoardButton();
     renderer.render(DEFAULT_FEN);
 
     document.getElementById('fen-input').value = DEFAULT_FEN;
@@ -434,6 +458,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-init-fen').addEventListener('click', onInitFEN);
     document.getElementById('btn-load-fen').addEventListener('click', onLoadFEN);
     document.getElementById('btn-export-fen').addEventListener('click', onExportFEN);
+    document.getElementById('btn-flip-board').addEventListener('click', toggleBoardFlipped);
     document.getElementById('btn-new-game').addEventListener('click', onNewGame);
     document.getElementById('btn-leaderboard').addEventListener('click', toggleLeaderboard);
 
@@ -2172,7 +2197,7 @@ async function historyExportGif() {
             exportCanvas,
             renderer.cellSize,
             renderer.margin,
-            { devicePixelRatio: 1, interactive: false }
+            { devicePixelRatio: 1, interactive: false, flipped: boardFlipped }
         );
         const encoder = new window.BattleChessGifEncoder(exportRenderer.width, exportRenderer.height);
 
