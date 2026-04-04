@@ -18,6 +18,9 @@ let historyGame = null;
 let historyViewIndex = -1;
 let historyAutoplayTimer = null;
 let historyGifExportInProgress = false;
+let _historyLogs = [];
+let _historyActiveGames = [];
+let _historyFinishedGames = [];
 const HISTORY_GIF_FRAME_DELAY_MS = 700;
 const HISTORY_GIF_INITIAL_DELAY_MS = 700;
 const HISTORY_GIF_FINAL_DELAY_MS = 1500;
@@ -540,6 +543,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         e.stopPropagation();
         loadHistoryList();
     });
+
+    // History filter controls
+    const filterInputs = ['filter-player', 'filter-result', 'filter-date-start', 'filter-date-end', 'filter-moves-min', 'filter-moves-max'];
+    for (const id of filterInputs) {
+        document.getElementById(id).addEventListener('input', applyHistoryFilters);
+        document.getElementById(id).addEventListener('change', applyHistoryFilters);
+    }
+    document.getElementById('btn-filter-reset').addEventListener('click', () => {
+        for (const id of filterInputs) document.getElementById(id).value = '';
+        applyHistoryFilters();
+    });
+
     document.getElementById('btn-history-back').addEventListener('click', closeHistoryDetail);
     document.getElementById('btn-hist-first').addEventListener('click', historyGoFirst);
     document.getElementById('btn-hist-prev').addEventListener('click', historyStepPrev);
@@ -1864,88 +1879,124 @@ async function loadHistoryList() {
     const listEl = document.getElementById('history-list');
     listEl.innerHTML = '<div class="history-empty">Loading...</div>';
     try {
-        // Fetch both active games and completed logs
         const [activeResp, logsResp] = await Promise.all([
             fetch('/api/games').then(r => r.json()).catch(() => ({ games: [] })),
             fetch('/api/logs').then(r => r.json()).catch(() => ({ logs: [] })),
         ]);
 
-        const activeGames = (activeResp.games || []).filter(g => g.status !== 'finished');
-        const finishedGames = (activeResp.games || []).filter(g => g.status === 'finished');
-        const logs = logsResp.logs || [];
+        _historyActiveGames = (activeResp.games || []).filter(g => g.status !== 'finished');
+        _historyFinishedGames = (activeResp.games || []).filter(g => g.status === 'finished');
+        _historyLogs = logsResp.logs || [];
 
-        listEl.innerHTML = '';
-
-        // Section: In Progress
-        if (activeGames.length > 0) {
-            const header = document.createElement('div');
-            header.className = 'history-section-header';
-            header.textContent = '\u8fdb\u884c\u4e2d (In Progress)';
-            listEl.appendChild(header);
-
-            for (const g of activeGames) {
-                const item = document.createElement('div');
-                item.className = 'history-item active-game';
-                const statusText = g.status === 'playing' ? '\u5bf9\u5c40\u4e2d' : g.status === 'paused' ? '\u5df2\u6682\u505c' : g.status;
-                const statusClass = g.status === 'playing' ? 'status-playing' : 'status-paused';
-                item.innerHTML = `
-                    <div class="hist-meta">
-                        <span class="hist-status ${statusClass}">${escapeHtml(statusText)}</span>
-                        <span class="hist-moves-count">${g.move_count} moves</span>
-                    </div>
-                    <div class="hist-players">
-                        <span class="red-name">${escapeHtml(g.red_label)}</span>
-                        <span class="vs">vs</span>
-                        <span class="black-name">${escapeHtml(g.black_label)}</span>
-                    </div>
-                `;
-                item.addEventListener('click', () => {
-                    // Switch to this game's tab
-                    if (gameStates.has(g.id)) {
-                        switchActiveGame(g.id);
-                        switchTab('log');
-                    }
-                });
-                listEl.appendChild(item);
-            }
-        }
-
-        // Section: Completed (active finished games that haven't been logged yet + logs)
-        const hasCompleted = finishedGames.length > 0 || logs.length > 0;
-        if (hasCompleted) {
-            const header = document.createElement('div');
-            header.className = 'history-section-header';
-            header.textContent = '\u5df2\u7ed3\u675f (Completed)';
-            listEl.appendChild(header);
-        }
-
-        for (const log of logs) {
-            const item = document.createElement('div');
-            item.className = 'history-item';
-            const resultClass = log.result.includes('red wins') ? 'result-red'
-                : log.result.includes('black wins') ? 'result-black'
-                : 'result-draw';
-            item.innerHTML = `
-                <div class="hist-meta">
-                    <span class="hist-date">${escapeHtml(log.timestamp)}</span>
-                    <span class="hist-moves-count">${log.move_count} moves</span>
-                </div>
-                <div class="hist-players">
-                    <span class="red-name">${escapeHtml(log.red_label)}</span>
-                    <span class="vs">vs</span>
-                    <span class="black-name">${escapeHtml(log.black_label)}</span>
-                </div>
-                <span class="hist-result ${resultClass}">${escapeHtml(log.result)}</span>
-            `;
-            item.addEventListener('click', () => openHistoryDetail(log.filename));
-            listEl.appendChild(item);
-        }
-
-        if (activeGames.length === 0 && logs.length === 0) {
-            listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
-        }
+        applyHistoryFilters();
     } catch (e) {
         listEl.innerHTML = '<div class="history-empty">Failed to load history.</div>';
+    }
+}
+
+function applyHistoryFilters() {
+    const playerQ = (document.getElementById('filter-player').value || '').trim().toLowerCase();
+    const resultQ = document.getElementById('filter-result').value;
+    const dateStart = document.getElementById('filter-date-start').value;
+    const dateEnd = document.getElementById('filter-date-end').value;
+    const movesMin = document.getElementById('filter-moves-min').value;
+    const movesMax = document.getElementById('filter-moves-max').value;
+
+    const filtered = _historyLogs.filter(log => {
+        if (playerQ) {
+            const r = (log.red_label || '').toLowerCase();
+            const b = (log.black_label || '').toLowerCase();
+            if (!r.includes(playerQ) && !b.includes(playerQ)) return false;
+        }
+        if (resultQ === 'red' && !log.result.includes('red wins')) return false;
+        if (resultQ === 'black' && !log.result.includes('black wins')) return false;
+        if (resultQ === 'draw' && (log.result.includes('red wins') || log.result.includes('black wins'))) return false;
+        if (dateStart) {
+            const logDate = (log.timestamp || '').slice(0, 10).replace(/\//g, '-');
+            if (logDate < dateStart) return false;
+        }
+        if (dateEnd) {
+            const logDate = (log.timestamp || '').slice(0, 10).replace(/\//g, '-');
+            if (logDate > dateEnd) return false;
+        }
+        if (movesMin && log.move_count < parseInt(movesMin)) return false;
+        if (movesMax && log.move_count > parseInt(movesMax)) return false;
+        return true;
+    });
+
+    renderHistoryList(_historyActiveGames, _historyFinishedGames, filtered);
+}
+
+function renderHistoryList(activeGames, finishedGames, logs) {
+    const listEl = document.getElementById('history-list');
+    listEl.innerHTML = '';
+
+    // Section: In Progress (always shown, not filtered)
+    if (activeGames.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'history-section-header';
+        header.textContent = '\u8fdb\u884c\u4e2d (In Progress)';
+        listEl.appendChild(header);
+
+        for (const g of activeGames) {
+            const item = document.createElement('div');
+            item.className = 'history-item active-game';
+            const statusText = g.status === 'playing' ? '\u5bf9\u5c40\u4e2d' : g.status === 'paused' ? '\u5df2\u6682\u505c' : g.status;
+            const statusClass = g.status === 'playing' ? 'status-playing' : 'status-paused';
+            item.innerHTML = `
+                <div class="hist-meta">
+                    <span class="hist-status ${statusClass}">${escapeHtml(statusText)}</span>
+                    <span class="hist-moves-count">${g.move_count} moves</span>
+                </div>
+                <div class="hist-players">
+                    <span class="red-name">${escapeHtml(g.red_label)}</span>
+                    <span class="vs">vs</span>
+                    <span class="black-name">${escapeHtml(g.black_label)}</span>
+                </div>
+            `;
+            item.addEventListener('click', () => {
+                if (gameStates.has(g.id)) {
+                    switchActiveGame(g.id);
+                    switchTab('log');
+                }
+            });
+            listEl.appendChild(item);
+        }
+    }
+
+    // Section: Completed
+    const hasCompleted = finishedGames.length > 0 || logs.length > 0;
+    if (hasCompleted) {
+        const header = document.createElement('div');
+        header.className = 'history-section-header';
+        header.textContent = '\u5df2\u7ed3\u675f (Completed)';
+        listEl.appendChild(header);
+    }
+
+    for (const log of logs) {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        const resultClass = log.result.includes('red wins') ? 'result-red'
+            : log.result.includes('black wins') ? 'result-black'
+            : 'result-draw';
+        item.innerHTML = `
+            <div class="hist-meta">
+                <span class="hist-date">${escapeHtml(log.timestamp)}</span>
+                <span class="hist-moves-count">${log.move_count} moves</span>
+            </div>
+            <div class="hist-players">
+                <span class="red-name">${escapeHtml(log.red_label)}</span>
+                <span class="vs">vs</span>
+                <span class="black-name">${escapeHtml(log.black_label)}</span>
+            </div>
+            <span class="hist-result ${resultClass}">${escapeHtml(log.result)}</span>
+        `;
+        item.addEventListener('click', () => openHistoryDetail(log.filename));
+        listEl.appendChild(item);
+    }
+
+    if (activeGames.length === 0 && logs.length === 0) {
+        listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
     }
 }
 
