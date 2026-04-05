@@ -859,6 +859,10 @@ async def game_loop(game: GameSession):
                 pass
             game.pikafish = None
         await _shutdown_player_engines(game)
+        if game.status == "finished":
+            asyncio.get_event_loop().call_later(
+                300, lambda gid=game.id: games.pop(gid, None)
+            )
 
 
 async def _game_loop_inner(game: GameSession):
