@@ -155,7 +155,7 @@ async function wasmAutoMove(gameId, side) {
             if (gameStates.get(gameId) === g && g.viewIndex === -1) {
                 renderer.render(result.fen_after, move);
             }
-            await apiPost(`/api/game/${gameId}/human-move`, { move });
+            await apiPostWithRetry(`/api/game/${gameId}/human-move`, { move });
         }
     } catch (e) {
         console.error(`[WASM] Auto-move error for ${side}:`, e);
@@ -802,6 +802,31 @@ async function apiPost(path, body = {}) {
     return resp.json();
 }
 
+/**
+ * POST with automatic retries on transient failures (5xx, network errors).
+ * 4xx errors (illegal move, etc.) are thrown immediately without retry.
+ */
+async function apiPostWithRetry(path, body = {}, maxAttempts = 4) {
+    let lastErr;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            return await apiPost(path, body);
+        } catch (e) {
+            lastErr = e;
+            // Don't retry 4xx client errors (e.g. "Illegal move")
+            // Only retry on network/5xx errors (message contains "Bad Gateway", "Internal Server Error", etc.)
+            const msg = e.message || '';
+            const isTransient = msg.includes('Bad Gateway') || msg.includes('Internal Server')
+                || msg.includes('Service Unavailable') || msg.includes('Gateway Timeout')
+                || msg.includes('Failed to fetch') || msg.includes('NetworkError')
+                || msg.includes('fetch');
+            if (!isTransient) throw e;
+        }
+        await new Promise(r => setTimeout(r, 300 * Math.pow(2, attempt)));
+    }
+    throw lastErr;
+}
+
 async function apiGet(path) {
     const resp = await fetch(path);
     if (!resp.ok) {
@@ -900,15 +925,7 @@ async function onNewGame() {
             pikafish: pikafishConfig,
             timer: timerConfig,
         };
-        let createResult;
-        try {
-            createResult = await apiPost('/api/game/create', createPayload);
-        } catch (firstErr) {
-            // Retry once after a short delay (handles cold-start / proxy 502)
-            await new Promise(r => setTimeout(r, 500));
-            createResult = await apiPost('/api/game/create', createPayload);
-        }
-        const { game_id } = createResult;
+        const { game_id } = await apiPostWithRetry('/api/game/create', createPayload);
 
         const g = createGameState(game_id, {
             fen,
@@ -949,7 +966,7 @@ async function onNewGame() {
         setStatus('Starting game...');
         g.status = 'playing';
         connectSSE(game_id);
-        await apiPost(`/api/game/${game_id}/start`);
+        await apiPostWithRetry(`/api/game/${game_id}/start`);
         setStatus('Game started');
         updateUI();
         updateHumanInteractive();
@@ -1146,13 +1163,9 @@ async function submitHumanMove(move) {
     g.pendingLocalMove = move;
     renderer.render(result.fen_after, move);
 
-    // Notify server (needed to advance game loop)
-    apiPost(`/api/game/${g.gameId}/human-move`, { move }).catch(e => {
-        // Rollback on error
-        g.pendingLocalMove = null;
-        renderer.render(g.fen, g.lastMove);
-        alert('Invalid move: ' + e.message);
-        updateHumanInteractive();
+    // Notify server (needed to advance game loop); silent retry on transient errors
+    apiPostWithRetry(`/api/game/${g.gameId}/human-move`, { move }).catch(e => {
+        console.warn('[human-move] server sync failed after retries:', e.message);
     });
 }
 
