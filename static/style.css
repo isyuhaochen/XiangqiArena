@@ -625,13 +625,37 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     }
     /* Leaderboard page */
     #leaderboard-page {
-        padding: 0 8px;
+        padding: 0 4px;
+        margin: 8px auto;
     }
     #leaderboard-content {
         overflow-x: auto;
+        overflow-y: visible;
+        border-radius: 8px;
     }
-    .lb-table {
-        font-size: 12px;
+    .lb-summary {
+        padding: 8px 10px;
+        gap: 4px;
+    }
+    .lb-summary-val {
+        font-size: 16px;
+    }
+    .lb-summary-item {
+        min-width: 60px;
+        padding: 6px 4px;
+    }
+    .lb-table th,
+    .lb-table td {
+        padding: 6px 6px;
+        font-size: 11px;
+        white-space: nowrap;
+    }
+    .lb-table th.stat,
+    .lb-table td.stat {
+        width: auto;
+    }
+    .lb-table th.side-group {
+        min-width: auto;
     }
     /* Config sections */
     .config-side {
@@ -670,7 +694,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     background: var(--card-bg);
     border-radius: 10px;
     box-shadow: var(--shadow);
-    overflow: hidden;
+    overflow: auto;
 }
 .lb-summary {
     display: flex;
