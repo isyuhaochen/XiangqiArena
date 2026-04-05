@@ -265,6 +265,46 @@ function getLegalMovesForPiece(fen, col, row) {
     return legal;
 }
 
-return { getLegalMovesForPiece };
+function gridToFen(grid, turn) {
+    const ranks = [];
+    for (let row = 9; row >= 0; row--) {
+        let rank = '';
+        let empty = 0;
+        for (let col = 0; col < 9; col++) {
+            const p = grid[row][col];
+            if (!p) {
+                empty++;
+            } else {
+                if (empty > 0) { rank += empty; empty = 0; }
+                rank += p;
+            }
+        }
+        if (empty > 0) rank += empty;
+        ranks.push(rank);
+    }
+    return ranks.join('/') + ' ' + turn;
+}
+
+/**
+ * Apply a move to a FEN position. No validation (caller must ensure legality).
+ * @param {string} fen
+ * @param {string} moveStr - ICCS format e.g. "h2e2"
+ * @returns {{ piece: string, captured: string|null, fen_after: string, move: string }}
+ */
+function applyMove(fen, moveStr) {
+    const { grid, turn } = parseFEN(fen);
+    const cf = moveStr.charCodeAt(0) - 97;
+    const rf = parseInt(moveStr[1]);
+    const ct = moveStr.charCodeAt(2) - 97;
+    const rt = parseInt(moveStr[3]);
+    const piece = grid[rf][cf];
+    const captured = grid[rt][ct];
+    grid[rf][cf] = null;
+    grid[rt][ct] = piece;
+    const newTurn = turn === 'w' ? 'b' : 'w';
+    return { piece, captured, fen_after: gridToFen(grid, newTurn), move: moveStr };
+}
+
+return { getLegalMovesForPiece, applyMove };
 
 })();

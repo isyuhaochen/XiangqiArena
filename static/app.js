@@ -56,6 +56,8 @@ function createGameState(gameId, config = {}) {
             lastSync: 0,
             intervalId: null,
         },
+        // Optimistic local move pending server confirmation
+        pendingLocalMove: null,
     };
 }
 
@@ -147,6 +149,12 @@ async function wasmAutoMove(gameId, side) {
         console.log(`[WASM] Bestmove for ${side}: ${move}`);
 
         if (move && g.status === 'playing') {
+            // Optimistic: render locally before server round-trip
+            const result = XiangqiRules.applyMove(g.fen, move);
+            g.pendingLocalMove = move;
+            if (gameStates.get(gameId) === g && g.viewIndex === -1) {
+                renderer.render(result.fen_after, move);
+            }
             await apiPost(`/api/game/${gameId}/human-move`, { move });
         }
     } catch (e) {
@@ -885,13 +893,22 @@ async function onNewGame() {
             initial_time: timerEnabledChecked ? getConfiguredTimerInitialTime() : DEFAULT_TIMER_INITIAL_SECONDS,
             increment: timerEnabledChecked ? parseInt(document.getElementById('timer-increment').value) : 10,
         };
-        const { game_id } = await apiPost('/api/game/create', {
+        const createPayload = {
             fen,
             red: configs.red,
             black: configs.black,
             pikafish: pikafishConfig,
             timer: timerConfig,
-        });
+        };
+        let createResult;
+        try {
+            createResult = await apiPost('/api/game/create', createPayload);
+        } catch (firstErr) {
+            // Retry once after a short delay (handles cold-start / proxy 502)
+            await new Promise(r => setTimeout(r, 500));
+            createResult = await apiPost('/api/game/create', createPayload);
+        }
+        const { game_id } = createResult;
 
         const g = createGameState(game_id, {
             fen,
@@ -1122,13 +1139,21 @@ function showViewIndex() {
 async function submitHumanMove(move) {
     const g = activeGame();
     if (!g) return;
-    try {
-        renderer.humanInteractive = false;
-        await apiPost(`/api/game/${g.gameId}/human-move`, { move });
-    } catch (e) {
+    renderer.humanInteractive = false;
+
+    // Optimistic: apply locally and render before server round-trip
+    const result = XiangqiRules.applyMove(g.fen, move);
+    g.pendingLocalMove = move;
+    renderer.render(result.fen_after, move);
+
+    // Notify server (needed to advance game loop)
+    apiPost(`/api/game/${g.gameId}/human-move`, { move }).catch(e => {
+        // Rollback on error
+        g.pendingLocalMove = null;
+        renderer.render(g.fen, g.lastMove);
         alert('Invalid move: ' + e.message);
         updateHumanInteractive();
-    }
+    });
 }
 
 function fetchLegalMovesForPiece(col, row) {
@@ -1166,6 +1191,10 @@ function connectSSE(gameId) {
 
     es.addEventListener('move', (e) => {
         const data = JSON.parse(e.data);
+        // Check if this move was already rendered locally (optimistic update)
+        const wasLocal = g.pendingLocalMove === data.move;
+        if (wasLocal) g.pendingLocalMove = null;
+
         g.fen = data.fen;
         g.turn = data.fen.split(' ')[1] || 'w';
         g.lastMove = data.move;
@@ -1173,7 +1202,7 @@ function connectSSE(gameId) {
 
         if (isActiveVisible(gameId)) {
             finalizeLogEntry(data);
-            if (g.viewIndex === -1) {
+            if (!wasLocal && g.viewIndex === -1) {
                 renderer.render(g.fen, data.move);
             }
             updateTurnIndicator();
