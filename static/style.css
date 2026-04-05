@@ -571,6 +571,18 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 /* Responsive */
 @media (max-width: 960px) {
     #main-area { flex-direction: column; align-items: center; }
+    #board-column {
+        width: 100%;
+        max-width: 100vw;
+        overflow: hidden;
+    }
+    #board-canvas {
+        max-width: calc(100vw - 32px);
+        height: auto !important;
+    }
+    #game-tabs {
+        max-width: calc(100vw - 32px);
+    }
     #right-column {
         width: 100%;
         height: min(520px, 50vh);
