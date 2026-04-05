@@ -305,6 +305,145 @@ function applyMove(fen, moveStr) {
     return { piece, captured, fen_after: gridToFen(grid, newTurn), move: moveStr };
 }
 
-return { getLegalMovesForPiece, applyMove };
+/**
+ * Get all legal moves in ICCS format for the current side.
+ * @param {string} fen
+ * @returns {string[]} e.g. ["h2e2", "b0c2", ...]
+ */
+function getAllLegalMoves(fen) {
+    const { grid, turn } = parseFEN(fen);
+    const moves = [];
+    for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 9; c++) {
+            const p = grid[r][c];
+            if (!p || pieceColor(p) !== turn) continue;
+            const targets = pseudoMoves(grid, turn, c, r);
+            for (const [tc, tr] of targets) {
+                if (!wouldLeaveInCheck(grid, turn, c, r, tc, tr)) {
+                    moves.push(String.fromCharCode(97 + c) + r + String.fromCharCode(97 + tc) + tr);
+                }
+            }
+        }
+    }
+    return moves;
+}
+
+/**
+ * Check if the game is over.
+ * @param {string} fen - current position
+ * @param {number} moveCount - total moves played (for draw detection)
+ * @param {Array} moveHistory - array of move records with `captured` field
+ * @returns {{ isOver: boolean, winner: string|null, reason: string }}
+ */
+function isGameOver(fen, moveCount, moveHistory) {
+    const { grid, turn } = parseFEN(fen);
+
+    // King missing
+    if (!findKing(grid, 'w')) return { isOver: true, winner: 'black', reason: 'black wins - red king captured' };
+    if (!findKing(grid, 'b')) return { isOver: true, winner: 'red', reason: 'red wins - black king captured' };
+
+    // No legal moves
+    const legal = getAllLegalMoves(fen);
+    if (legal.length === 0) {
+        const winner = turn === 'w' ? 'black' : 'red';
+        if (isInCheck(grid, turn)) {
+            return { isOver: true, winner, reason: `checkmate - ${winner} wins` };
+        } else {
+            return { isOver: true, winner, reason: `stalemate - ${winner} wins` };
+        }
+    }
+
+    // Draw by 30 full moves (60 plies) without capture
+    if (moveHistory && moveHistory.length >= 60) {
+        const recent = moveHistory.slice(-60);
+        if (recent.every(m => !m.captured)) {
+            return { isOver: true, winner: 'draw', reason: 'draw - 30 full moves without capture' };
+        }
+    }
+
+    return { isOver: false, winner: null, reason: '' };
+}
+
+// --- Chinese notation ---
+
+const PIECE_NAMES_ZH = {
+    'K': '帅', 'A': '仕', 'B': '相', 'N': '马', 'R': '车', 'C': '炮', 'P': '兵',
+    'k': '将', 'a': '士', 'b': '象', 'n': '马', 'r': '车', 'c': '炮', 'p': '卒',
+};
+const RED_DIGITS = '零一二三四五六七八九';
+const BLACK_DIGITS = '0123456789';
+const POSITION_PREFIXES = { 2: ['前', '后'], 3: ['前', '中', '后'] };
+
+function sideNumeral(side, value) {
+    const digits = side === 'w' ? RED_DIGITS : BLACK_DIGITS;
+    return value >= 0 && value < digits.length ? digits[value] : String(value);
+}
+
+function fileNumberForSide(side, col) {
+    return side === 'w' ? 9 - col : col + 1;
+}
+
+function isForwardForSide(side, fromRow, toRow) {
+    return side === 'w' ? toRow > fromRow : toRow < fromRow;
+}
+
+function movePrefixZh(grid, piece, col, row) {
+    const side = pieceColor(piece);
+    // Find same piece on same file
+    const sameFile = [];
+    for (let r = 0; r < 10; r++) {
+        if (grid[r][col] === piece) sameFile.push([col, r]);
+    }
+    const pieceName = PIECE_NAMES_ZH[piece];
+    if (sameFile.length > 1) {
+        // Sort: red descending row (front=high), black ascending row (front=low)
+        const ordered = [...sameFile].sort((a, b) => side === 'w' ? b[1] - a[1] : a[1] - b[1]);
+        const idx = ordered.findIndex(p => p[0] === col && p[1] === row);
+        const prefixes = POSITION_PREFIXES[ordered.length];
+        const prefix = prefixes ? prefixes[idx] : sideNumeral(side, idx + 1);
+        return prefix + pieceName;
+    }
+    return pieceName + sideNumeral(side, fileNumberForSide(side, col));
+}
+
+/**
+ * Convert ICCS move to Chinese notation given the BEFORE-move FEN.
+ * @param {string} fen - position BEFORE the move
+ * @param {string} moveStr - ICCS e.g. "h2e2"
+ * @returns {string} e.g. "炮二平五"
+ */
+function toChineseMove(fen, moveStr) {
+    const { grid } = parseFEN(fen);
+    const cf = moveStr.charCodeAt(0) - 97;
+    const rf = parseInt(moveStr[1]);
+    const ct = moveStr.charCodeAt(2) - 97;
+    const rt = parseInt(moveStr[3]);
+    const piece = grid[rf][cf];
+    if (!piece) return moveStr;
+
+    const side = pieceColor(piece);
+    const pieceType = piece.toUpperCase();
+    const prefix = movePrefixZh(grid, piece, cf, rf);
+    let action, target;
+
+    if (ct === cf) {
+        action = isForwardForSide(side, rf, rt) ? '进' : '退';
+        if ('ABN'.includes(pieceType)) {
+            target = sideNumeral(side, fileNumberForSide(side, ct));
+        } else {
+            target = sideNumeral(side, Math.abs(rt - rf));
+        }
+    } else if (rt === rf) {
+        action = '平';
+        target = sideNumeral(side, fileNumberForSide(side, ct));
+    } else {
+        action = isForwardForSide(side, rf, rt) ? '进' : '退';
+        target = sideNumeral(side, fileNumberForSide(side, ct));
+    }
+
+    return prefix + action + target;
+}
+
+return { getLegalMovesForPiece, applyMove, getAllLegalMoves, isGameOver, toChineseMove };
 
 })();

@@ -56,8 +56,11 @@ function createGameState(gameId, config = {}) {
             lastSync: 0,
             intervalId: null,
         },
-        // Optimistic local move pending server confirmation
-        pendingLocalMove: null,
+        // Client-side game loop state
+        isLocal: false,           // true = client-driven (no LLM), false = server-driven
+        pendingLocalMove: null,   // optimistic move pending server confirmation
+        _humanMoveResolve: null,  // resolve function for awaiting human move in local loop
+        _localLoopPaused: false,  // pause flag for local game loop
     };
 }
 
@@ -159,6 +162,219 @@ async function wasmAutoMove(gameId, side) {
         }
     } catch (e) {
         console.error(`[WASM] Auto-move error for ${side}:`, e);
+    }
+}
+
+// --- Client-side game loop (for local games: human, pikafish, random — no LLM) ---
+
+/**
+ * Wait for a human move in a local game. Returns a Promise<string> (ICCS move).
+ */
+function waitForLocalHumanMove(g) {
+    return new Promise(resolve => {
+        g._humanMoveResolve = resolve;
+    });
+}
+
+/**
+ * Compute a WASM pikafish move for a local game. Returns ICCS string.
+ */
+async function computeLocalPikafishMove(gameId, side, fen) {
+    const config = getConfigs()[side];
+    const engine = await getWasmPlayerEngine(gameId, side);
+    const options = {
+        mode: config.engine_mode || 'movetime',
+        movetime: config.engine_movetime || 1000,
+        depth: config.engine_depth || 20,
+    };
+    return await engine.bestmove(fen, options);
+}
+
+/**
+ * Choose a random legal move.
+ */
+function chooseRandomMove(fen) {
+    const moves = XiangqiRules.getAllLegalMoves(fen);
+    return moves.length > 0 ? moves[Math.floor(Math.random() * moves.length)] : null;
+}
+
+/**
+ * Apply a move in a local game: update state, render, create log entry.
+ */
+function applyLocalMove(g, moveStr) {
+    const sideName = g.turn === 'w' ? 'red' : 'black';
+    const moveZh = XiangqiRules.toChineseMove(g.fen, moveStr);
+    const result = XiangqiRules.applyMove(g.fen, moveStr);
+    const moveNumber = g.moveHistory.length + 1;
+
+    const moveRecord = {
+        number: moveNumber,
+        side: sideName,
+        move: moveStr,
+        move_zh: moveZh,
+        piece: result.piece,
+        captured: result.captured,
+        fen: result.fen_after,
+        timestamp: Date.now() / 1000,
+    };
+
+    g.fen = result.fen_after;
+    g.turn = result.fen_after.split(' ')[1] || 'w';
+    g.lastMove = moveStr;
+    g.moveHistory.push(moveRecord);
+
+    if (isActiveVisible(g.gameId)) {
+        finalizeLogEntry(moveRecord);
+        if (g.viewIndex === -1) {
+            renderer.render(g.fen, moveStr);
+        }
+        updateTurnIndicator();
+        updateHumanInteractive();
+    }
+
+    // Trigger WASM eval if enabled
+    if (moveRecord.number && moveRecord.fen) {
+        wasmEvaluatePosition(g.gameId, moveRecord.fen, moveRecord.number);
+    }
+}
+
+/**
+ * Finish a local game.
+ */
+function finishLocalGame(g, winner, reason) {
+    g.status = 'finished';
+    stopTimerInterval(g);
+    g.timer.activeSide = null;
+    cleanupWasmEngines(g.gameId);
+
+    if (isActiveVisible(g.gameId)) {
+        let msg;
+        if (winner === 'draw') {
+            msg = reason || 'Draw';
+        } else if (winner) {
+            const w = winner === 'red' ? 'Red' : 'Black';
+            msg = `${w} wins! ${reason || ''}`;
+        } else {
+            msg = reason || 'Game over';
+        }
+        setStatus(msg);
+        updateUI();
+        updateHumanInteractive();
+    }
+
+    // POST final result to server for logging (fire-and-forget)
+    postGameResult(g.gameId, g.moveHistory.map(m => m.move), winner, reason);
+}
+
+/**
+ * POST final game result to server for logging.
+ */
+function postGameResult(gameId, moves, winner, reason) {
+    apiPostWithRetry(`/api/game/${gameId}/finish`, { moves, winner, reason })
+        .catch(e => console.warn('[finish] server log failed:', e.message));
+}
+
+/**
+ * Main client-side game loop. Runs entirely in the browser.
+ */
+async function clientGameLoop(gameId) {
+    const g = gameStates.get(gameId);
+    if (!g) return;
+
+    while (g.status === 'playing') {
+        // Check pause
+        if (g._localLoopPaused) {
+            await new Promise(resolve => { g._resumeResolve = resolve; });
+            if (g.status !== 'playing') break;
+        }
+
+        const side = g.turn; // 'w' or 'b'
+        const sideName = side === 'w' ? 'red' : 'black';
+        const config = getConfigs()[sideName];
+        const playerType = config?.type || 'human';
+
+        // Update turn indicator
+        if (isActiveVisible(gameId)) {
+            if (playerType === 'human') {
+                setStatus(`Waiting for ${sideName} (human) to move...`);
+            } else if (playerType === 'pikafish') {
+                setStatus(`${sideName === 'red' ? 'Red' : 'Black'} Pikafish (WASM) is thinking...`);
+            } else if (playerType === 'random') {
+                setStatus(`${sideName === 'red' ? 'Red' : 'Black'} (random) is thinking...`);
+            }
+            updateTurnIndicator();
+            updateHumanInteractive();
+            createLogEntry(sideName);
+        }
+
+        // Start timer
+        let turnStartTime = null;
+        if (g.timer.enabled) {
+            turnStartTime = Date.now();
+            g.timer.activeSide = side;
+            g.timer.lastSync = Date.now();
+            startTimerInterval(g);
+        }
+
+        let moveStr = null;
+        try {
+            if (playerType === 'human') {
+                moveStr = await waitForLocalHumanMove(g);
+            } else if (playerType === 'pikafish') {
+                moveStr = await computeLocalPikafishMove(gameId, sideName, g.fen);
+            } else if (playerType === 'random') {
+                await new Promise(r => setTimeout(r, 300));
+                moveStr = chooseRandomMove(g.fen);
+            }
+        } catch (e) {
+            console.error(`[local] Move error for ${sideName}:`, e);
+        }
+
+        if (g.status !== 'playing') break;
+        if (g._localLoopPaused) continue; // go back to top to await resume
+
+        // Timer check after move
+        if (g.timer.enabled && turnStartTime) {
+            const elapsed = (Date.now() - turnStartTime) / 1000;
+            if (side === 'w') {
+                g.timer.redTime -= elapsed;
+                if (g.timer.redTime <= 0) {
+                    g.timer.redTime = 0;
+                    finishLocalGame(g, 'black', `red ran out of time (超时判负)`);
+                    return;
+                }
+                g.timer.redTime += g.timer.increment || 0;
+            } else {
+                g.timer.blackTime -= elapsed;
+                if (g.timer.blackTime <= 0) {
+                    g.timer.blackTime = 0;
+                    finishLocalGame(g, 'red', `black ran out of time (超时判负)`);
+                    return;
+                }
+                g.timer.blackTime += g.timer.increment || 0;
+            }
+            g.timer.lastSync = Date.now();
+            if (isActiveVisible(gameId)) updateTimerDisplay();
+        }
+
+        if (!moveStr) {
+            const winner = side === 'w' ? 'black' : 'red';
+            finishLocalGame(g, winner, `${sideName} failed to make a move`);
+            return;
+        }
+
+        // Apply move
+        applyLocalMove(g, moveStr);
+
+        // Check game over
+        const gameOver = XiangqiRules.isGameOver(g.fen, g.moveHistory.length, g.moveHistory);
+        if (gameOver.isOver) {
+            finishLocalGame(g, gameOver.winner, gameOver.reason);
+            return;
+        }
+
+        // Small delay between turns for visual clarity
+        await new Promise(r => setTimeout(r, 100));
     }
 }
 
@@ -938,6 +1154,7 @@ async function onNewGame() {
             g.timer.enabled = true;
             g.timer.redTime = timerConfig.initial_time;
             g.timer.blackTime = timerConfig.initial_time;
+            g.timer.increment = timerConfig.increment || 0;
         }
 
         gameStates.set(game_id, g);
@@ -965,11 +1182,22 @@ async function onNewGame() {
         // Auto-start the game
         setStatus('Starting game...');
         g.status = 'playing';
-        connectSSE(game_id);
-        await apiPostWithRetry(`/api/game/${game_id}/start`);
-        setStatus('Game started');
-        updateUI();
-        updateHumanInteractive();
+        const startResult = await apiPostWithRetry(`/api/game/${game_id}/start`);
+        g.isLocal = !!startResult.local;
+
+        if (g.isLocal) {
+            // Client-driven game: run loop locally, no SSE needed
+            setStatus('Game started (local)');
+            updateUI();
+            updateHumanInteractive();
+            clientGameLoop(game_id); // fire-and-forget async
+        } else {
+            // Server-driven game (has LLM): use SSE as before
+            connectSSE(game_id);
+            setStatus('Game started');
+            updateUI();
+            updateHumanInteractive();
+        }
     } catch (e) {
         alert('Failed to create game: ' + e.message);
         setStatus('Error: ' + e.message);
@@ -1031,19 +1259,66 @@ async function onPause() {
     const g = activeGame();
     if (!g) return;
     try {
-        if (g.status === 'playing') {
-            await apiPost(`/api/game/${g.gameId}/pause`);
-            g.status = 'paused';
-        } else if (g.status === 'paused') {
-            if (g.viewIndex !== -1) {
-                await apiPost(`/api/game/${g.gameId}/seek`, { ply: g.viewIndex });
+        if (g.isLocal) {
+            // Local game: handle pause/resume client-side
+            if (g.status === 'playing') {
+                g._localLoopPaused = true;
+                g.status = 'paused';
+                stopTimerInterval(g);
+                // If waiting for human move, cancel the wait
+                if (g._humanMoveResolve) {
+                    const resolve = g._humanMoveResolve;
+                    g._humanMoveResolve = null;
+                    resolve(null); // resolve with null to unblock the loop
+                }
+                setStatus('Game paused');
+            } else if (g.status === 'paused') {
+                // Handle seek if view index is not at latest
+                if (g.viewIndex !== -1 && g.viewIndex < g.moveHistory.length) {
+                    // Rewind to viewIndex
+                    const initialFen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
+                    g.moveHistory = g.moveHistory.slice(0, g.viewIndex);
+                    // Recompute fen by replaying moves
+                    let fen = initialFen;
+                    for (const m of g.moveHistory) {
+                        const r = XiangqiRules.applyMove(fen, m.move);
+                        fen = r.fen_after;
+                    }
+                    g.fen = fen;
+                    g.turn = fen.split(' ')[1] || 'w';
+                    g.lastMove = g.moveHistory.length > 0 ? g.moveHistory[g.moveHistory.length - 1].move : null;
+                    g.viewIndex = -1;
+                    renderer.render(g.fen, g.lastMove);
+                }
+                g.status = 'playing';
+                g._localLoopPaused = false;
+                // Resume the loop
+                if (g._resumeResolve) {
+                    const resolve = g._resumeResolve;
+                    g._resumeResolve = null;
+                    resolve();
+                } else {
+                    // Loop may have exited; restart it
+                    clientGameLoop(g.gameId);
+                }
+                setStatus('Game resumed');
             }
-            await apiPost(`/api/game/${g.gameId}/resume`);
-            g.status = 'playing';
+        } else {
+            // Server-driven game
+            if (g.status === 'playing') {
+                await apiPost(`/api/game/${g.gameId}/pause`);
+                g.status = 'paused';
+            } else if (g.status === 'paused') {
+                if (g.viewIndex !== -1) {
+                    await apiPost(`/api/game/${g.gameId}/seek`, { ply: g.viewIndex });
+                }
+                await apiPost(`/api/game/${g.gameId}/resume`);
+                g.status = 'playing';
+            }
         }
         updateUI();
         updateHumanInteractive();
-        } catch (e) {
+    } catch (e) {
         alert('Error: ' + e.message);
     }
 }
@@ -1051,8 +1326,26 @@ async function onPause() {
 async function onReset() {
     const g = activeGame();
     if (!g) return;
-    closeGameStream(g);
-    try { await apiPost(`/api/game/${g.gameId}/reset`); } catch (_) {}
+
+    if (g.isLocal) {
+        // Stop local game loop
+        g.status = 'finished';
+        g._localLoopPaused = false;
+        if (g._humanMoveResolve) {
+            const resolve = g._humanMoveResolve;
+            g._humanMoveResolve = null;
+            resolve(null);
+        }
+        if (g._resumeResolve) {
+            const resolve = g._resumeResolve;
+            g._resumeResolve = null;
+            resolve();
+        }
+        cleanupWasmEngines(g.gameId);
+    } else {
+        closeGameStream(g);
+        try { await apiPost(`/api/game/${g.gameId}/reset`); } catch (_) {}
+    }
     stopTimerInterval(g);
     enterReadyState(document.getElementById('fen-input').value.trim() || DEFAULT_FEN, 'Ready');
 }
@@ -1158,15 +1451,22 @@ async function submitHumanMove(move) {
     if (!g) return;
     renderer.humanInteractive = false;
 
-    // Optimistic: apply locally and render before server round-trip
-    const result = XiangqiRules.applyMove(g.fen, move);
-    g.pendingLocalMove = move;
-    renderer.render(result.fen_after, move);
-
-    // Notify server (needed to advance game loop); silent retry on transient errors
-    apiPostWithRetry(`/api/game/${g.gameId}/human-move`, { move }).catch(e => {
-        console.warn('[human-move] server sync failed after retries:', e.message);
-    });
+    if (g.isLocal) {
+        // Local game: resolve the promise that clientGameLoop is awaiting
+        if (g._humanMoveResolve) {
+            const resolve = g._humanMoveResolve;
+            g._humanMoveResolve = null;
+            resolve(move);
+        }
+    } else {
+        // Server-driven game: optimistic render + POST to server
+        const result = XiangqiRules.applyMove(g.fen, move);
+        g.pendingLocalMove = move;
+        renderer.render(result.fen_after, move);
+        apiPostWithRetry(`/api/game/${g.gameId}/human-move`, { move }).catch(e => {
+            console.warn('[human-move] server sync failed after retries:', e.message);
+        });
+    }
 }
 
 function fetchLegalMovesForPiece(col, row) {

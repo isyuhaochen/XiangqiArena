@@ -492,6 +492,12 @@ class SeekGameRequest(BaseModel):
     ply: int
 
 
+class FinishGameRequest(BaseModel):
+    moves: list[str]  # list of ICCS move strings in order
+    winner: Optional[str] = None  # "red" | "black" | "draw" | None
+    reason: Optional[str] = None
+
+
 class GameSession:
     def __init__(self, game_id: str, fen: str, red: PlayerConfig, black: PlayerConfig):
         self.id = game_id
@@ -1156,11 +1162,16 @@ async def start_game(game_id: str):
     if game.status == "finished":
         raise HTTPException(400, "Game already finished, create a new one")
 
-    game.task = asyncio.create_task(game_loop(game))
-    # Server-side eval engine disabled - eval runs in browser via WASM.
-    # await _start_eval_engine(game)
+    # If neither side is LLM, the game is "local" — client runs its own loop.
+    # Server still tracks state for /api/games and writes log on /finish.
+    is_local = game.red_config.type != "llm" and game.black_config.type != "llm"
+    if is_local:
+        game.status = "playing"
+        game.broadcast("status", {"status": "playing"})
+    else:
+        game.task = asyncio.create_task(game_loop(game))
 
-    return {"status": "started"}
+    return {"status": "started", "local": is_local}
 
 
 @app.post("/api/game/{game_id}/pause")
@@ -1277,6 +1288,58 @@ async def reset_game(game_id: str):
     game.broadcast("status", {"status": "reset"})
     del games[game_id]
     return {"status": "reset"}
+
+
+@app.post("/api/game/{game_id}/finish")
+async def finish_game(game_id: str, req: FinishGameRequest):
+    """Finalize a client-driven (local) game: replay moves on server, write log.
+    Idempotent — calling twice on a finished game is a no-op.
+    """
+    game = games.get(game_id)
+    if not game:
+        raise HTTPException(404, "Game not found")
+    if game.status == "finished":
+        return {"status": "already_finished"}
+
+    # Replay from initial FEN to reconstruct server-side move history
+    board = Board(game.initial_fen)
+    rebuilt_history = []
+    move_number = 0
+    for move_iccs in req.moves:
+        try:
+            result = board.make_move(move_iccs)
+        except ValueError as e:
+            raise HTTPException(400, f"Invalid move in history: {move_iccs}: {e}")
+        move_number += 1
+        side_name = "black" if board.turn == 'w' else "red"  # just flipped
+        rebuilt_history.append(_build_move_record(move_number, side_name, result))
+
+    game.board = board
+    game.move_history = rebuilt_history
+
+    # Determine winner/reason: trust client if provided, otherwise detect
+    winner = req.winner
+    reason = req.reason or ""
+    if not winner:
+        is_over, w, r = board.is_game_over()
+        if is_over:
+            winner = w
+            reason = r
+    if winner:
+        _finish_game(game, winner, reason)
+
+    # Write log file
+    if game.move_history:
+        try:
+            write_game_log(game)
+        except Exception:
+            pass
+
+    # Schedule cleanup
+    asyncio.get_event_loop().call_later(
+        300, lambda gid=game.id: games.pop(gid, None)
+    )
+    return {"status": "finished", "winner": winner, "reason": reason}
 
 
 @app.post("/api/game/{game_id}/human-move")
