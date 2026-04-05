@@ -93,6 +93,9 @@ class PikafishWasm {
         this._resolveReady = null;
         this._readyPromise = new Promise(r => { this._resolveReady = r; });
         this._fallbackTriggered = false;
+        // Queue for serializing engine operations
+        this._queue = Promise.resolve();
+        this._analyzing = false;
     }
 
     async init() {
@@ -235,22 +238,67 @@ class PikafishWasm {
     }
 
     /**
+     * Internal: run a single engine operation (bestmove or evaluate).
+     * All operations are serialized via _queue to prevent overlapping UCI commands.
+     */
+    _enqueue(fn) {
+        const task = this._queue.then(fn, fn);
+        this._queue = task.catch(() => {});
+        return task;
+    }
+
+    /**
+     * Internal: stop any in-progress analysis before starting a new one.
+     */
+    _stopIfAnalyzing() {
+        if (this._analyzing) {
+            return new Promise((resolve) => {
+                // Send stop, wait for bestmove response to flush
+                const prevHandler = this._onOutput;
+                this._onOutput = (line) => {
+                    if (line.startsWith('bestmove')) {
+                        this._analyzing = false;
+                        this._onOutput = null;
+                        resolve();
+                    }
+                };
+                this.sendCommand('stop');
+                // Safety timeout in case bestmove never comes
+                setTimeout(() => {
+                    this._analyzing = false;
+                    this._onOutput = null;
+                    resolve();
+                }, 2000);
+            });
+        }
+        return Promise.resolve();
+    }
+
+    /**
      * Get the best move for a given FEN position.
      * @param {string} fen - FEN string
      * @param {object} options - { mode: 'movetime'|'depth', movetime: ms, depth: int }
      * @returns {Promise<string>} bestmove in ICCS format (e.g. 'b0c2')
      */
     bestmove(fen, options = {}) {
-        return new Promise((resolve) => {
+        return this._enqueue(() => this._doBestmove(fen, options));
+    }
+
+    _doBestmove(fen, options) {
+        return new Promise(async (resolve) => {
+            await this._stopIfAnalyzing();
+
             const mode = options.mode || 'movetime';
             const goCmd = mode === 'depth'
                 ? `go depth ${options.depth || 20}`
                 : `go movetime ${options.movetime || 1000}`;
 
+            this._analyzing = true;
             this._onOutput = (line) => {
                 if (line.startsWith('bestmove')) {
                     const parts = line.split(/\s+/);
                     this._onOutput = null;
+                    this._analyzing = false;
                     resolve(parts[1] || null);
                 }
             };
@@ -262,19 +310,27 @@ class PikafishWasm {
 
     /**
      * Evaluate a position and return score info.
+     * Operations are queued to prevent overlapping analyses.
      * @param {string} fen - FEN string
      * @param {object} options - { mode, movetime, depth }
      * @param {function} onInfo - callback for intermediate info lines (optional)
      * @returns {Promise<{bestmove: string, score: object}>}
      */
     evaluate(fen, options = {}, onInfo = null) {
-        return new Promise((resolve) => {
+        return this._enqueue(() => this._doEvaluate(fen, options, onInfo));
+    }
+
+    _doEvaluate(fen, options, onInfo) {
+        return new Promise(async (resolve) => {
+            await this._stopIfAnalyzing();
+
             const mode = options.mode || 'movetime';
             const goCmd = mode === 'depth'
                 ? `go depth ${options.depth || 20}`
                 : `go movetime ${options.movetime || 1000}`;
 
             let lastScore = null;
+            this._analyzing = true;
 
             this._onOutput = (line) => {
                 // Parse score from info lines
@@ -291,6 +347,7 @@ class PikafishWasm {
                 if (line.startsWith('bestmove')) {
                     const parts = line.split(/\s+/);
                     this._onOutput = null;
+                    this._analyzing = false;
                     resolve({
                         bestmove: parts[1] || null,
                         score: lastScore
