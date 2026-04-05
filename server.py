@@ -123,8 +123,7 @@ def _player_label(config) -> str:
     elif config.type == "random":
         return "Random"
     elif config.type == "pikafish":
-        engine_name = os.path.basename(_display_player_engine_path(config))
-        return f"Pikafish ({engine_name})"
+        return "Pikafish"
     elif config.type == "llm":
         name = config.preset or config.model or "unknown"
         return f"LLM ({name})"
@@ -138,8 +137,7 @@ def _player_filename_label(config) -> str:
     if config.type == "random":
         return "Random"
     if config.type == "pikafish":
-        engine_name = os.path.splitext(os.path.basename(_display_player_engine_path(config)))[0]
-        return f"Pikafish-{engine_name}"
+        return "Pikafish"
     if config.type == "llm":
         name = config.preset or config.model or "unknown"
         return f"LLM-{name}"
@@ -253,7 +251,7 @@ def _player_config_summary(config) -> dict:
         })
     elif config.type == "pikafish":
         summary.update({
-            "engine_path": _display_player_engine_path(config),
+            "engine": "Pikafish WASM (browser)",
             "engine_mode": _resolved_player_engine_mode(config),
             "engine_movetime": _resolved_player_engine_movetime(config),
             "engine_depth": _resolved_player_engine_depth(config),
@@ -908,8 +906,10 @@ async def _game_loop_inner(game: GameSession):
                 )
 
             elif config.type == "pikafish":
+                # Browser-side WASM Pikafish: server waits for the browser to
+                # compute and submit the move via /human-move endpoint.
                 move_iccs = await _run_with_turn_timeout(
-                    game, side, side_name, _request_pikafish_move(game, side_name, config)
+                    game, side, side_name, _wait_for_human_move(game, side_name)
                 )
                 if game.status != "playing":
                     return
@@ -996,6 +996,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="BattleChess", lifespan=lifespan)
 
 
+# --- Cross-Origin headers for multi-threaded WASM (SharedArrayBuffer) ---
+
+@app.middleware("http")
+async def add_coop_coep_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    return response
+
+
 # --- API endpoints ---
 
 @app.get("/api/presets")
@@ -1075,9 +1086,7 @@ def _validate_pikafish_player_config(config: PlayerConfig):
         return
     if config.engine_mode and config.engine_mode not in {"movetime", "depth"}:
         raise HTTPException(400, f"Invalid Pikafish player mode: {config.engine_mode}")
-    engine_path = _resolved_player_engine_path(config)
-    if not os.path.isfile(engine_path):
-        raise HTTPException(400, f"Pikafish player engine not found: {engine_path}")
+    # Browser-side WASM: no local engine path required
 
 
 def _resolved_eval_engine_path(config: PikafishConfig) -> str:
@@ -1089,9 +1098,7 @@ def _validate_eval_pikafish_config(config: PikafishConfig):
         return
     if config.mode not in {"movetime", "depth"}:
         raise HTTPException(400, f"Invalid evaluation Pikafish mode: {config.mode}")
-    engine_path = _resolved_eval_engine_path(config)
-    if not os.path.isfile(engine_path):
-        raise HTTPException(400, f"Evaluation Pikafish engine not found: {engine_path}")
+    # Browser-side WASM: no local engine path required
 
 
 @app.post("/api/game/create")
@@ -1150,7 +1157,8 @@ async def start_game(game_id: str):
         raise HTTPException(400, "Game already finished, create a new one")
 
     game.task = asyncio.create_task(game_loop(game))
-    await _start_eval_engine(game)
+    # Server-side eval engine disabled - eval runs in browser via WASM.
+    # await _start_eval_engine(game)
 
     return {"status": "started"}
 
@@ -1186,7 +1194,8 @@ async def resume_game(game_id: str):
     game.pause_event.set()
     if not game.task or game.task.done():
         game.task = asyncio.create_task(game_loop(game))
-    await _start_eval_engine(game)
+    # Server-side eval engine disabled - eval runs in browser via WASM.
+    # await _start_eval_engine(game)
     await _queue_missing_evals(game)
     return {"status": "resumed"}
 

@@ -67,11 +67,145 @@ let renderer = null;
 const presetConfigs = {};
 let availablePrompts = [];
 let defaultPromptName = 'zh';
-let defaultPikafishPath = 'pikafish\\pikafish-bmi2.exe';
-let defaultEvalPikafishPath = 'pikafish\\pikafish-bmi2.exe';
+let defaultPikafishPath = '';  // No longer used (WASM)
+let defaultEvalPikafishPath = '';  // No longer used (WASM)
 let rightColumnSyncScheduled = false;
 let rightColumnSyncTimeoutId = null;
 let boardFlipped = false;
+
+// --- WASM Pikafish engine instances ---
+// Per-game player engines (keyed by gameId, value: { red: PikafishWasm, black: PikafishWasm })
+const wasmPlayerEngines = new Map();
+// Shared eval engine
+let wasmEvalEngine = null;
+let wasmEvalEngineInitPromise = null;
+
+/**
+ * Get or create a WASM Pikafish engine for a player side.
+ */
+async function getWasmPlayerEngine(gameId, side) {
+    let engines = wasmPlayerEngines.get(gameId);
+    if (!engines) {
+        engines = {};
+        wasmPlayerEngines.set(gameId, engines);
+    }
+    if (!engines[side]) {
+        const engine = new PikafishWasm();
+        await engine.init();
+        engines[side] = engine;
+    }
+    return engines[side];
+}
+
+/**
+ * Get or create the shared WASM eval engine.
+ */
+async function getWasmEvalEngine() {
+    if (wasmEvalEngine && wasmEvalEngine.isReady) return wasmEvalEngine;
+    if (wasmEvalEngineInitPromise) return wasmEvalEngineInitPromise;
+    wasmEvalEngineInitPromise = (async () => {
+        wasmEvalEngine = new PikafishWasm();
+        await wasmEvalEngine.init();
+        return wasmEvalEngine;
+    })();
+    return wasmEvalEngineInitPromise;
+}
+
+/**
+ * Terminate all WASM engines for a game.
+ */
+function cleanupWasmEngines(gameId) {
+    const engines = wasmPlayerEngines.get(gameId);
+    if (engines) {
+        if (engines.red) engines.red.terminate();
+        if (engines.black) engines.black.terminate();
+        wasmPlayerEngines.delete(gameId);
+    }
+}
+
+/**
+ * Auto-submit a WASM Pikafish move for the given side.
+ */
+async function wasmAutoMove(gameId, side) {
+    const g = gameStates.get(gameId);
+    if (!g || g.status !== 'playing') return;
+
+    const config = getConfigs()[side];
+    if (!config || config.type !== 'pikafish') return;
+
+    try {
+        const engine = await getWasmPlayerEngine(gameId, side);
+        const fen = g.fen;
+        const options = {
+            mode: config.engine_mode || 'movetime',
+            movetime: config.engine_movetime || 1000,
+            depth: config.engine_depth || 20,
+        };
+
+        console.log(`[WASM] Computing move for ${side}, fen=${fen}, options=`, options);
+        const move = await engine.bestmove(fen, options);
+        console.log(`[WASM] Bestmove for ${side}: ${move}`);
+
+        if (move && g.status === 'playing') {
+            await apiPost(`/api/game/${gameId}/human-move`, { move });
+        }
+    } catch (e) {
+        console.error(`[WASM] Auto-move error for ${side}:`, e);
+    }
+}
+
+/**
+ * Normalize score to red's perspective (positive = good for red).
+ * Pikafish reports from side-to-move's perspective.
+ */
+function normalizeScoreToRed(score, fen) {
+    if (!score) return score;
+    const parts = fen.split(' ');
+    const sideToMove = parts[1] || 'w';
+    if (sideToMove === 'b') {
+        return { type: score.type, value: -score.value };
+    }
+    return { type: score.type, value: score.value };
+}
+
+/**
+ * Run WASM eval on a position and broadcast results locally.
+ */
+async function wasmEvaluatePosition(gameId, fen, moveNumber) {
+    const g = gameStates.get(gameId);
+    if (!g) return;
+
+    const pikafishEnabled = document.getElementById('pikafish-enabled').checked;
+    if (!pikafishEnabled) return;
+
+    try {
+        const engine = await getWasmEvalEngine();
+        const mode = document.getElementById('pikafish-mode').value;
+        const options = {
+            mode: mode,
+            movetime: parseInt(document.getElementById('pikafish-movetime').value) || 1000,
+            depth: parseInt(document.getElementById('pikafish-depth').value) || 20,
+        };
+        const scoreType = document.getElementById('pikafish-score-type').value;
+
+        // Set ScoreType UCI option before evaluation
+        engine.setOption('ScoreType', scoreType);
+
+        const result = await engine.evaluate(fen, options);
+
+        if (result.score && moveNumber > 0 && moveNumber <= g.moveHistory.length) {
+            // Normalize score to red's perspective
+            const displayScore = normalizeScoreToRed(result.score, fen);
+            g.moveHistory[moveNumber - 1].eval = displayScore;
+            g.scoreType = scoreType;
+            if (isActiveVisible(gameId)) {
+                updateEvalDisplay(moveNumber, displayScore);
+            }
+        }
+    } catch (e) {
+        console.error('[WASM] Eval error:', e);
+    }
+}
 
 function syncFlipBoardButton() {
     const btn = document.getElementById('btn-flip-board');
@@ -200,17 +334,7 @@ function populatePromptOptions(side) {
 }
 
 function applyDefaultPikafishPaths() {
-    for (const side of ['red', 'black']) {
-        const input = document.getElementById(`${side}-pikafish-path`);
-        if (input && !input.value.trim()) {
-            input.value = defaultPikafishPath;
-        }
-    }
-
-    const evalInput = document.getElementById('pikafish-engine-path');
-    if (evalInput && !evalInput.value.trim()) {
-        evalInput.value = defaultEvalPikafishPath || defaultPikafishPath;
-    }
+    // No-op: WASM Pikafish doesn't need local engine paths.
 }
 
 function formatTimerDisplay(seconds) {
@@ -372,6 +496,9 @@ function closeGameTab(gameId) {
         g.eventSource = null;
     }
     stopTimerInterval(g);
+
+    // Cleanup WASM engines
+    cleanupWasmEngines(gameId);
 
     // If game is playing/paused, try to reset it on server
     if (g.status === 'playing' || g.status === 'paused') {
@@ -704,7 +831,6 @@ function getConfigs() {
         } else if (typeVal === 'pikafish') {
             result[side] = {
                 type: 'pikafish',
-                engine_path: document.getElementById(`${side}-pikafish-path`).value.trim() || defaultPikafishPath,
                 engine_mode: document.getElementById(`${side}-pikafish-mode`).value,
                 engine_movetime: parseInt(document.getElementById(`${side}-pikafish-movetime`).value) || 1000,
                 engine_depth: parseInt(document.getElementById(`${side}-pikafish-depth`).value) || 20,
@@ -741,10 +867,6 @@ async function onNewGame() {
                     return;
                 }
             }
-            if (configs[side].type === 'pikafish' && !configs[side].engine_path) {
-                alert(`Please fill in ${side} side Pikafish path.`);
-                return;
-            }
         }
 
         const fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
@@ -752,7 +874,6 @@ async function onNewGame() {
         setStatus('Creating game...');
         const pikafishConfig = {
             enabled: document.getElementById('pikafish-enabled').checked,
-            engine_path: document.getElementById('pikafish-engine-path').value.trim() || defaultEvalPikafishPath,
             mode: document.getElementById('pikafish-mode').value,
             movetime: parseInt(document.getElementById('pikafish-movetime').value) || 2000,
             depth: parseInt(document.getElementById('pikafish-depth').value) || 20,
@@ -1068,6 +1189,11 @@ function connectSSE(gameId) {
             updateTurnIndicator();
             updateHumanInteractive();
         }
+
+        // Trigger browser-side WASM eval if enabled
+        if (data.number && data.fen) {
+            wasmEvaluatePosition(gameId, data.fen, data.number);
+        }
     });
 
     es.addEventListener('reasoning', (e) => {
@@ -1103,6 +1229,7 @@ function connectSSE(gameId) {
     es.addEventListener('turn', (e) => {
         const data = JSON.parse(e.data);
         g.turn = data.side === 'red' ? 'w' : 'b';
+        if (data.fen) g.fen = data.fen;
         if (isActiveVisible(gameId)) {
             updateTurnIndicator();
             setStatus(`${data.side === 'red' ? 'Red' : 'Black'} is thinking...`);
@@ -1130,6 +1257,14 @@ function connectSSE(gameId) {
             setStatus(`Waiting for ${data.side} (human) to move...`);
             updateHumanInteractive();
         }
+        // If this side is a Pikafish WASM player, auto-compute and submit move
+        const sideType = document.getElementById(`${data.side}-type`).value;
+        if (sideType === 'pikafish') {
+            if (isActiveVisible(gameId)) {
+                setStatus(`${data.side === 'red' ? 'Red' : 'Black'} Pikafish (WASM) is thinking...`);
+            }
+            wasmAutoMove(gameId, data.side);
+        }
     });
 
     es.addEventListener('game_over', (e) => {
@@ -1138,11 +1273,14 @@ function connectSSE(gameId) {
         stopTimerInterval(g);
         g.timer.activeSide = null;
 
+        // Cleanup WASM engines for this game
+        cleanupWasmEngines(gameId);
+
         if (isActiveVisible(gameId)) {
             renderer.humanInteractive = false;
             updateTimerDisplay();
             showGameOver(data.winner, data.reason);
-            setStatus('Game over, finishing remaining Pikafish evaluations...');
+            setStatus('Game over');
             updateUI();
         }
         // Refresh leaderboard after log is written
@@ -1551,8 +1689,7 @@ function formatEvalScore(score, scoreType) {
         return score.value > 0 ? `M${score.value}` : `M${score.value}`;
     }
     if (scoreType === 'Elo') {
-        const pawns = (score.value / 100).toFixed(1);
-        return score.value > 0 ? `+${pawns}` : `${pawns}`;
+        return score.value > 0 ? `+${score.value}` : `${score.value}`;
     }
     return score.value > 0 ? `+${score.value}` : `${score.value}`;
 }
@@ -1603,16 +1740,18 @@ function _getEvalPoints() {
     const rawEntries = [];
     for (const move of g.moveHistory) {
         if (move.eval) {
+            // Skip mate 0 (checkmate position) — it flips sign misleadingly
+            if (move.eval.type === 'mate' && move.eval.value === 0) continue;
             if (move.eval.type === 'mate') {
                 rawEntries.push({ x: move.number, isMate: true, sign: move.eval.value > 0 ? 1 : -1, raw: move.eval });
             } else {
-                const val = isElo ? move.eval.value / 100 : move.eval.value;
+                const val = move.eval.value;
                 if (Math.abs(val) > maxAbs) maxAbs = Math.abs(val);
                 rawEntries.push({ x: move.number, isMate: false, y: val, raw: move.eval });
             }
         }
     }
-    const mateCap = isElo ? 100 : 10000;
+    const mateCap = isElo ? 10000 : 10000;
 
     const points = [];
     for (const e of rawEntries) {
