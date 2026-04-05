@@ -58,13 +58,13 @@
         <!-- Right: Tabbed Panel -->
         <div id="right-column">
             <div class="tab-bar">
-                <button class="tab-btn active" data-tab="log">记录</button>
-                <button class="tab-btn" data-tab="settings">设置</button>
+                <button class="tab-btn" data-tab="log">记录</button>
+                <button class="tab-btn active" data-tab="settings">设置</button>
                 <button class="tab-btn" data-tab="history">历史 <span class="tab-refresh" id="btn-history-refresh" title="刷新">&#x21bb;</span></button>
             </div>
 
             <!-- Log Tab -->
-            <div class="tab-content active" id="tab-log">
+            <div class="tab-content" id="tab-log">
                 <div id="eval-chart-container">
                     <canvas id="eval-chart"></canvas>
                 </div>
@@ -72,7 +72,7 @@
             </div>
 
             <!-- Settings Tab -->
-            <div class="tab-content" id="tab-settings">
+            <div class="tab-content active" id="tab-settings">
                 <div class="config-side red">
                     <h3><span class="dot red-dot"></span> Red (红方)</h3>
                     <div class="field">
@@ -306,6 +306,7 @@
     </div>
 
     <script src="/static/board.js?v=20260405-02"></script>
+    <script src="/static/xiangqi-rules.js?v=20260405-01"></script>
     <script src="/static/gif.js?v=20260402-03"></script>
     <script src="/static/engine/pikafish-wasm.js?v=20260405-02"></script>
     <script src="/static/app.js?v=20260405-02"></script>

@@ -1131,21 +1131,11 @@ async function submitHumanMove(move) {
     }
 }
 
-async function fetchLegalMovesForPiece(col, row) {
+function fetchLegalMovesForPiece(col, row) {
     const g = activeGame();
-    if (!g) return;
-    try {
-        const data = await apiGet(`/api/game/${g.gameId}/legal-moves?col=${col}&row=${row}`);
-        if (data.moves) {
-            const legalMoves = data.moves.map(m => ({
-                col: m.charCodeAt(2) - 97,
-                row: parseInt(m[3]),
-            }));
-            renderer.setLegalMoves(legalMoves);
-        }
-    } catch (e) {
-        // ignore
-    }
+    if (!g || !g.fen) return;
+    const legalMoves = XiangqiRules.getLegalMovesForPiece(g.fen, col, row);
+    renderer.setLegalMoves(legalMoves);
 }
 
 function updateHumanInteractive() {
@@ -2553,8 +2543,8 @@ async function loadLeaderboard() {
                         <div class="lb-bar-bg"><div class="lb-bar-fill ${rateCls}" style="width:${pct}%"></div></div>
                     </div>
                 </td>
-                <td class="stat"><div class="lb-side-detail">${e.asRed.wins}W ${e.asRed.losses}L ${e.asRed.draws}D</div><div class="lb-side-detail">Win ${redPct}% (${e.asRed.total} games)</div></td>
-                <td class="stat"><div class="lb-side-detail">${e.asBlack.wins}W ${e.asBlack.losses}L ${e.asBlack.draws}D</div><div class="lb-side-detail">Win ${blackPct}% (${e.asBlack.total} games)</div></td>
+                <td class="stat side-detail"><div class="lb-side-detail">${e.asRed.wins}W ${e.asRed.losses}L ${e.asRed.draws}D</div><div class="lb-side-detail">Win ${redPct}% (${e.asRed.total} games)</div></td>
+                <td class="stat side-detail"><div class="lb-side-detail">${e.asBlack.wins}W ${e.asBlack.losses}L ${e.asBlack.draws}D</div><div class="lb-side-detail">Win ${blackPct}% (${e.asBlack.total} games)</div></td>
             </tr>`;
         }
         html += '</tbody></table>';

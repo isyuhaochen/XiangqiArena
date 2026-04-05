@@ -629,8 +629,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
         margin: 8px auto;
     }
     #leaderboard-content {
-        overflow-x: auto;
-        overflow-y: visible;
         border-radius: 8px;
     }
     .lb-summary {
@@ -644,18 +642,35 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
         min-width: 60px;
         padding: 6px 4px;
     }
+    .lb-table th.side-group,
+    .lb-table td.side-detail {
+        display: none;
+    }
     .lb-table th,
     .lb-table td {
-        padding: 6px 6px;
-        font-size: 11px;
-        white-space: nowrap;
+        padding: 8px 6px;
+        font-size: 12px;
+    }
+    .lb-table th.num,
+    .lb-table td.num {
+        width: 30px;
+        padding: 8px 4px;
     }
     .lb-table th.stat,
     .lb-table td.stat {
         width: auto;
+        padding: 8px 4px;
     }
-    .lb-table th.side-group {
-        min-width: auto;
+    .lb-table th.rate,
+    .lb-table td.rate {
+        width: auto;
+        min-width: 70px;
+    }
+    .lb-player-name {
+        max-width: 120px;
+    }
+    .lb-player-games {
+        font-size: 10px;
     }
     /* Config sections */
     .config-side {
