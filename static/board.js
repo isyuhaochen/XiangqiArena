@@ -187,8 +187,11 @@ class BoardRenderer {
         if (!this.humanInteractive || !this.currentFen) return;
 
         const rect = this.canvas.getBoundingClientRect();
-        const px = e.clientX - rect.left;
-        const py = e.clientY - rect.top;
+        // Scale click coordinates to account for CSS scaling (mobile responsive)
+        const scaleX = this.width / rect.width;
+        const scaleY = this.height / rect.height;
+        const px = (e.clientX - rect.left) * scaleX;
+        const py = (e.clientY - rect.top) * scaleY;
         const pos = this.fromPixel(px, py);
         if (!pos) return;
 
