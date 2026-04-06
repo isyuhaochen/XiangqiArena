@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BattleChess - Xiangqi Arena</title>
     <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
-    <link rel="stylesheet" href="/static/style.css?v=20260405-04">
+    <link rel="stylesheet" href="/static/style.css?v=20260406-03">
 </head>
 <body>
     <header id="header">
@@ -25,6 +25,7 @@
         <div id="board-column">
             <canvas id="board-canvas"></canvas>
             <div id="timer-bar">
+                <div id="timer-live">
                 <div class="timer-side red-timer">
                     <span class="timer-label">Red (红方)</span>
                     <span class="timer-clock placeholder" id="timer-red">---</span>
@@ -33,8 +34,20 @@
                     <span class="timer-label">Black (黑方)</span>
                     <span class="timer-clock placeholder" id="timer-black">---</span>
                 </div>
+                </div>
+                <div id="editor-palette" class="hidden">
+                    <div class="editor-palette-row red" id="editor-red-palette"></div>
+                    <div class="editor-palette-row black" id="editor-black-palette"></div>
+                </div>
             </div>
-            <div id="turn-indicator">Ready to start</div>
+            <div id="turn-indicator">
+                <div id="turn-indicator-text">Ready to start</div>
+                <div id="editor-toolbar" class="hidden">
+                    <span class="editor-toolbar-label">先行</span>
+                    <button class="btn-small btn-secondary" id="btn-editor-turn-red" type="button">红</button>
+                    <button class="btn-small btn-secondary" id="btn-editor-turn-black" type="button">黑</button>
+                </div>
+            </div>
 
             <div id="board-controls">
                 <div class="fen-row">
@@ -48,9 +61,10 @@
                     <button class="btn-secondary" id="btn-step-forward" disabled title="Step Forward">&#9654;&#9654;</button>
                     <button class="btn-danger" id="btn-reset" disabled>Reset</button>
                     <button class="btn-secondary btn-small" id="btn-export-fen" title="Copy current FEN to clipboard">Export FEN</button>
+                    <button class="btn-secondary btn-small" id="btn-edit-position" title="Edit the board position before starting a game.">Edit</button>
                     <button class="btn-secondary btn-small" id="btn-flip-board" title="Flip the board so black is at the bottom." aria-pressed="false">Flip</button>
                     <span class="control-spacer"></span>
-                    <button class="btn-new-game" id="btn-new-game" title="新建并开始对局">+</button>
+                    <button class="btn-new-game" id="btn-new-game" title="新建并开始对局">Start</button>
                 </div>
             </div>
         </div>
@@ -305,10 +319,10 @@
         </div>
     </div>
 
-    <script src="/static/board.js?v=20260405-02"></script>
-    <script src="/static/xiangqi-rules.js?v=20260405-01"></script>
-    <script src="/static/gif.js?v=20260402-03"></script>
-    <script src="/static/engine/pikafish-wasm.js?v=20260405-02"></script>
-    <script src="/static/app.js?v=20260405-02"></script>
+    <script src="/static/board.js?v=20260406-02"></script>
+    <script src="/static/xiangqi-rules.js?v=20260406-02"></script>
+    <script src="/static/gif.js?v=20260406-02"></script>
+    <script src="/static/engine/pikafish-wasm.js?v=20260406-02"></script>
+    <script src="/static/app.js?v=20260406-02"></script>
 </body>
 </html>

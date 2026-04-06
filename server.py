@@ -850,7 +850,7 @@ async def game_loop(game: GameSession):
                 pass
         if game.status == "finished":
             game.broadcast("status", {"status": "finished"})
-        if game.status == "finished" and game.move_history:
+        if game.status == "finished":
             try:
                 write_game_log(game)
             except Exception:
@@ -1329,11 +1329,10 @@ async def finish_game(game_id: str, req: FinishGameRequest):
         _finish_game(game, winner, reason)
 
     # Write log file
-    if game.move_history:
-        try:
-            write_game_log(game)
-        except Exception:
-            pass
+    try:
+        write_game_log(game)
+    except Exception:
+        pass
 
     # Schedule cleanup
     asyncio.get_event_loop().call_later(

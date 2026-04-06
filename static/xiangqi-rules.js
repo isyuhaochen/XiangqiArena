@@ -7,10 +7,25 @@ const XiangqiRules = (() => {
 
 const RED_PIECES = new Set('KABNRCP');
 const BLACK_PIECES = new Set('kabnrcp');
+const VALID_PIECES = new Set('KABNRCPkabnrcp');
+const PIECE_LIMITS = {
+    K: 1, A: 2, B: 2, N: 2, R: 2, C: 2, P: 5,
+    k: 1, a: 2, b: 2, n: 2, r: 2, c: 2, p: 5,
+};
+const RED_PALACE_SQUARES = new Set(['3,0', '4,0', '5,0', '3,1', '4,1', '5,1', '3,2', '4,2', '5,2']);
+const BLACK_PALACE_SQUARES = new Set(['3,7', '4,7', '5,7', '3,8', '4,8', '5,8', '3,9', '4,9', '5,9']);
+const RED_ADVISOR_SQUARES = new Set(['3,0', '5,0', '4,1', '3,2', '5,2']);
+const BLACK_ADVISOR_SQUARES = new Set(['3,7', '5,7', '4,8', '3,9', '5,9']);
+const RED_BISHOP_SQUARES = new Set(['2,0', '6,0', '0,2', '4,2', '8,2', '2,4', '6,4']);
+const BLACK_BISHOP_SQUARES = new Set(['2,5', '6,5', '0,7', '4,7', '8,7', '2,9', '6,9']);
 
 function pieceColor(p) {
     if (!p) return null;
     return RED_PIECES.has(p) ? 'w' : BLACK_PIECES.has(p) ? 'b' : null;
+}
+
+function squareKey(col, row) {
+    return `${col},${row}`;
 }
 
 function parseFEN(fen) {
@@ -285,6 +300,112 @@ function gridToFen(grid, turn) {
     return ranks.join('/') + ' ' + turn;
 }
 
+function validatePosition(fen) {
+    if (typeof fen !== 'string' || !fen.trim()) {
+        return { valid: false, reason: 'FEN is empty' };
+    }
+
+    const parts = fen.trim().split(/\s+/);
+    if (parts.length < 2) {
+        return { valid: false, reason: 'FEN must include side to move' };
+    }
+
+    const boardPart = parts[0];
+    const turn = parts[1];
+    if (turn !== 'w' && turn !== 'b') {
+        return { valid: false, reason: 'Side to move must be w or b' };
+    }
+
+    const rows = boardPart.split('/');
+    if (rows.length !== 10) {
+        return { valid: false, reason: 'Board must have 10 ranks' };
+    }
+
+    for (const rowText of rows) {
+        let width = 0;
+        for (const ch of rowText) {
+            if (ch >= '1' && ch <= '9') {
+                width += parseInt(ch, 10);
+            } else if (VALID_PIECES.has(ch)) {
+                width += 1;
+            } else {
+                return { valid: false, reason: `Unknown piece: ${ch}` };
+            }
+        }
+        if (width !== 9) {
+            return { valid: false, reason: 'Each rank must contain exactly 9 files' };
+        }
+    }
+
+    const { grid } = parseFEN(`${boardPart} ${turn}`);
+    const counts = Object.fromEntries(Object.keys(PIECE_LIMITS).map(piece => [piece, 0]));
+
+    for (let row = 0; row < 10; row++) {
+        for (let col = 0; col < 9; col++) {
+            const piece = grid[row][col];
+            if (!piece) continue;
+
+            if (!VALID_PIECES.has(piece)) {
+                return { valid: false, reason: `Unknown piece: ${piece}` };
+            }
+
+            counts[piece] += 1;
+            if (counts[piece] > PIECE_LIMITS[piece]) {
+                return { valid: false, reason: `Too many ${piece} pieces` };
+            }
+
+            const side = pieceColor(piece);
+            const key = squareKey(col, row);
+            const upper = piece.toUpperCase();
+
+            if (upper === 'K') {
+                const palaceSquares = side === 'w' ? RED_PALACE_SQUARES : BLACK_PALACE_SQUARES;
+                if (!palaceSquares.has(key)) {
+                    return { valid: false, reason: `${side === 'w' ? 'Red' : 'Black'} king must stay inside the palace` };
+                }
+            } else if (upper === 'A') {
+                const advisorSquares = side === 'w' ? RED_ADVISOR_SQUARES : BLACK_ADVISOR_SQUARES;
+                if (!advisorSquares.has(key)) {
+                    return { valid: false, reason: `${side === 'w' ? 'Red' : 'Black'} advisor is on an illegal square` };
+                }
+            } else if (upper === 'B') {
+                const bishopSquares = side === 'w' ? RED_BISHOP_SQUARES : BLACK_BISHOP_SQUARES;
+                if (!bishopSquares.has(key)) {
+                    return { valid: false, reason: `${side === 'w' ? 'Red' : 'Black'} bishop is on an illegal square` };
+                }
+            } else if (upper === 'P') {
+                if ((side === 'w' && row < 3) || (side === 'b' && row > 6)) {
+                    return { valid: false, reason: `${side === 'w' ? 'Red' : 'Black'} pawn is on an illegal square` };
+                }
+            }
+        }
+    }
+
+    if (counts.K !== 1 || counts.k !== 1) {
+        return { valid: false, reason: 'Both sides must have exactly one king' };
+    }
+
+    if (flyingKingExposed(grid)) {
+        return { valid: false, reason: 'The two kings cannot face each other directly' };
+    }
+
+    const opponent = turn === 'w' ? 'b' : 'w';
+    const sideToMoveInCheck = isInCheck(grid, turn);
+    const opponentInCheck = isInCheck(grid, opponent);
+    if (sideToMoveInCheck && opponentInCheck) {
+        return { valid: false, reason: 'Both sides cannot be in check at the same time' };
+    }
+    if (opponentInCheck) {
+        return { valid: false, reason: 'The side that just moved cannot leave its own king in check' };
+    }
+
+    return {
+        valid: true,
+        normalizedFen: gridToFen(grid, turn),
+        inCheck: sideToMoveInCheck,
+    };
+}
+
 /**
  * Apply a move to a FEN position. No validation (caller must ensure legality).
  * @param {string} fen
@@ -444,6 +565,15 @@ function toChineseMove(fen, moveStr) {
     return prefix + action + target;
 }
 
-return { getLegalMovesForPiece, applyMove, getAllLegalMoves, isGameOver, toChineseMove };
+return {
+    parseFEN,
+    gridToFen,
+    validatePosition,
+    getLegalMovesForPiece,
+    applyMove,
+    getAllLegalMoves,
+    isGameOver,
+    toChineseMove,
+};
 
 })();

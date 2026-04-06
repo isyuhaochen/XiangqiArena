@@ -7,9 +7,11 @@
 const DEFAULT_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w';
 const TIMER_PLACEHOLDER = '---';
 const DEFAULT_TIMER_INITIAL_SECONDS = 30 * 60;
+const TIMEOUT_REASON_SUFFIX = '(\u8d85\u65f6\u5224\u8d1f)';
 
 // --- Multi-game state ---
 const gameStates = new Map(); // gameId → game state object
+const pendingFinishedGames = new Map(); // gameId -> finished game summary awaiting server/log sync
 let activeGameId = null;
 
 // History replay (global, not per-game)
@@ -25,6 +27,43 @@ const HISTORY_GIF_FRAME_DELAY_MS = 700;
 const HISTORY_GIF_INITIAL_DELAY_MS = 700;
 const HISTORY_GIF_FINAL_DELAY_MS = 1500;
 const HISTORY_GIF_PROGRESS_YIELD_EVERY = 4;
+
+function formatTimeoutReason(sideName) {
+    return `${sideName} ran out of time ${TIMEOUT_REASON_SUFFIX}`;
+}
+
+function formatGameResultText(winner, reason) {
+    const cleanReason = String(reason || '').trim();
+    if (winner === 'draw') {
+        return cleanReason || 'draw';
+    }
+    if (winner) {
+        return cleanReason ? `${winner} wins - ${cleanReason}` : `${winner} wins`;
+    }
+    return cleanReason || 'unfinished';
+}
+
+function isHistoryTabActive() {
+    const activeTab = document.querySelector('.tab-btn.active');
+    return !!activeTab && activeTab.dataset.tab === 'history';
+}
+
+function recordPendingFinishedGame(g, winner, reason) {
+    if (!g) return;
+    pendingFinishedGames.set(g.gameId, {
+        id: g.gameId,
+        status: 'finished',
+        red_label: g.redLabel,
+        black_label: g.blackLabel,
+        move_count: g.moveHistory.length,
+        winner: winner || null,
+        reason: reason || '',
+        result: formatGameResultText(winner, reason),
+        timestamp: new Date().toLocaleString('sv-SE').replace('T', ' '),
+        pending_log: true,
+        sync_failed: false,
+    });
+}
 
 function createGameState(gameId, config = {}) {
     return {
@@ -77,6 +116,28 @@ let defaultEvalPikafishPath = '';  // No longer used (WASM)
 let rightColumnSyncScheduled = false;
 let rightColumnSyncTimeoutId = null;
 let boardFlipped = false;
+const EDITOR_PIECE_CHARS = {
+    K: '\u5e05', A: '\u4ed5', B: '\u76f8', N: '\u9a6c', R: '\u8f66', C: '\u70ae', P: '\u5175',
+    k: '\u5c06', a: '\u58eb', b: '\u8c61', n: '\u9a6c', r: '\u8f66', c: '\u70ae', p: '\u5352',
+};
+const EDITOR_PIECE_NAMES = {
+    K: 'Red King', A: 'Red Advisor', B: 'Red Bishop', N: 'Red Knight', R: 'Red Rook', C: 'Red Cannon', P: 'Red Pawn',
+    k: 'Black King', a: 'Black Advisor', b: 'Black Bishop', n: 'Black Knight', r: 'Black Rook', c: 'Black Cannon', p: 'Black Pawn',
+};
+const EDITOR_PIECE_HINTS = {
+    K: 'Drag to place', A: 'Reusable', B: 'Reusable', N: 'Reusable', R: 'Reusable', C: 'Reusable', P: 'Reusable',
+    k: 'Drag to place', a: 'Reusable', b: 'Reusable', n: 'Reusable', r: 'Reusable', c: 'Reusable', p: 'Reusable',
+};
+const EDITOR_RED_PALETTE = ['K', 'A', 'B', 'N', 'R', 'C', 'P'];
+const EDITOR_BLACK_PALETTE = ['k', 'a', 'b', 'n', 'r', 'c', 'p'];
+const positionEditor = {
+    enabled: false,
+    turn: 'w',
+    grid: null,
+    dragging: null,
+    hoverSquare: null,
+    ghostEl: null,
+};
 
 // --- WASM Pikafish engine instances ---
 // Per-game player engines (keyed by gameId, value: { red: PikafishWasm, black: PikafishWasm })
@@ -84,6 +145,336 @@ const wasmPlayerEngines = new Map();
 // Shared eval engine
 let wasmEvalEngine = null;
 let wasmEvalEngineInitPromise = null;
+
+function cloneEditorGrid(grid) {
+    return Array.isArray(grid)
+        ? grid.map(row => Array.isArray(row) ? row.slice() : Array(9).fill(null))
+        : Array.from({ length: 10 }, () => Array(9).fill(null));
+}
+
+function isPositionEditingAvailable() {
+    const g = activeGame();
+    return !historyMode && (!g || g.status === 'waiting');
+}
+
+function getEditorSourceFen() {
+    const g = activeGame();
+    if (g && g.status === 'waiting' && g.fen) {
+        return g.fen;
+    }
+    return document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
+}
+
+function getPositionEditorFen() {
+    if (!positionEditor.grid) return getEditorSourceFen();
+    return XiangqiRules.gridToFen(positionEditor.grid, positionEditor.turn);
+}
+
+function syncPositionEditorFenInput() {
+    const fen = getPositionEditorFen();
+    document.getElementById('fen-input').value = fen;
+    const g = activeGame();
+    if (g && g.status === 'waiting') {
+        g.fen = fen;
+        g.turn = positionEditor.turn;
+        g.lastMove = null;
+    }
+    return fen;
+}
+
+function ensurePositionEditorGhost() {
+    if (positionEditor.ghostEl) return positionEditor.ghostEl;
+    const ghost = document.createElement('div');
+    ghost.className = 'editor-piece-ghost hidden';
+    document.body.appendChild(ghost);
+    positionEditor.ghostEl = ghost;
+    return ghost;
+}
+
+function setPositionEditorGhost(piece, clientX, clientY) {
+    const ghost = ensurePositionEditorGhost();
+    const colorClass = piece === piece.toUpperCase() ? 'red' : 'black';
+    ghost.innerHTML = `<span class="editor-piece-token ${colorClass}">${EDITOR_PIECE_CHARS[piece] || piece}</span>`;
+    ghost.classList.remove('hidden');
+    ghost.style.left = `${clientX}px`;
+    ghost.style.top = `${clientY}px`;
+}
+
+function movePositionEditorGhost(clientX, clientY) {
+    if (!positionEditor.ghostEl) return;
+    positionEditor.ghostEl.style.left = `${clientX}px`;
+    positionEditor.ghostEl.style.top = `${clientY}px`;
+}
+
+function hidePositionEditorGhost() {
+    if (!positionEditor.ghostEl) return;
+    positionEditor.ghostEl.classList.add('hidden');
+    positionEditor.ghostEl.innerHTML = '';
+}
+
+function buildPositionEditorPalette() {
+    const rows = [
+        ['editor-red-palette', EDITOR_RED_PALETTE, 'red'],
+        ['editor-black-palette', EDITOR_BLACK_PALETTE, 'black'],
+    ];
+
+    for (const [id, pieces, colorClass] of rows) {
+        const rowEl = document.getElementById(id);
+        if (!rowEl || rowEl.childElementCount > 0) continue;
+
+        for (const piece of pieces) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = `editor-piece-chip ${colorClass}`;
+            chip.dataset.piece = piece;
+            chip.innerHTML = `<span class="editor-piece-token">${EDITOR_PIECE_CHARS[piece] || piece}</span>`;
+            chip.title = EDITOR_PIECE_NAMES[piece] || piece;
+            chip.addEventListener('pointerdown', (event) => {
+                if (!positionEditor.enabled || event.button !== 0) return;
+                event.preventDefault();
+                beginPositionEditorDrag(
+                    piece,
+                    { type: 'palette' },
+                    event.clientX,
+                    event.clientY
+                );
+            });
+            rowEl.appendChild(chip);
+        }
+    }
+}
+
+function cleanupPositionEditorDragListeners() {
+    document.removeEventListener('pointermove', onPositionEditorPointerMove);
+    document.removeEventListener('pointerup', onPositionEditorPointerUp);
+    document.removeEventListener('pointercancel', onPositionEditorPointerUp);
+}
+
+function updatePositionEditorBoardClass() {
+    const boardColumn = document.getElementById('board-column');
+    if (!boardColumn) return;
+    boardColumn.classList.toggle('editor-active', positionEditor.enabled);
+    boardColumn.classList.toggle('editor-dragging', !!positionEditor.dragging);
+}
+
+function updatePositionEditorPanels() {
+    const timerLive = document.getElementById('timer-live');
+    const editorPalette = document.getElementById('editor-palette');
+    const turnIndicator = document.getElementById('turn-indicator');
+    const turnText = document.getElementById('turn-indicator-text');
+    const editorToolbar = document.getElementById('editor-toolbar');
+    const redTurnBtn = document.getElementById('btn-editor-turn-red');
+    const blackTurnBtn = document.getElementById('btn-editor-turn-black');
+    const editBtn = document.getElementById('btn-edit-position');
+
+    if (timerLive) timerLive.classList.toggle('hidden', positionEditor.enabled);
+    if (editorPalette) editorPalette.classList.toggle('hidden', !positionEditor.enabled);
+    if (editorToolbar) editorToolbar.classList.toggle('hidden', !positionEditor.enabled);
+    if (turnIndicator) turnIndicator.classList.toggle('edit-mode', positionEditor.enabled);
+    if (turnText && positionEditor.enabled) {
+        turnText.textContent = 'Position Editor';
+    }
+    if (redTurnBtn) redTurnBtn.classList.toggle('is-active', positionEditor.enabled && positionEditor.turn === 'w');
+    if (blackTurnBtn) blackTurnBtn.classList.toggle('is-active', positionEditor.enabled && positionEditor.turn === 'b');
+    if (editBtn) {
+        editBtn.textContent = positionEditor.enabled ? 'Done' : 'Edit';
+        editBtn.classList.toggle('is-active', positionEditor.enabled);
+    }
+
+    updatePositionEditorBoardClass();
+}
+
+function renderPositionEditorBoard() {
+    if (!positionEditor.enabled || !positionEditor.grid) return;
+    const fen = syncPositionEditorFenInput();
+    renderer.selectedSquare = positionEditor.dragging && positionEditor.hoverSquare
+        ? { ...positionEditor.hoverSquare }
+        : null;
+    renderer.legalMoves = [];
+    renderer.render(fen);
+}
+
+function getBoardSquareFromClientPoint(clientX, clientY) {
+    if (!renderer || !renderer.canvas) return null;
+    const rect = renderer.canvas.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+        return null;
+    }
+
+    const scaleX = renderer.width / rect.width;
+    const scaleY = renderer.height / rect.height;
+    const px = (clientX - rect.left) * scaleX;
+    const py = (clientY - rect.top) * scaleY;
+    return renderer.fromPixel(px, py);
+}
+
+function isClientPointInsideElement(clientX, clientY, element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+}
+
+function isPositionEditorDropZone(clientX, clientY) {
+    return isClientPointInsideElement(clientX, clientY, document.getElementById('editor-palette'))
+        || isClientPointInsideElement(clientX, clientY, document.getElementById('turn-indicator'));
+}
+
+function beginPositionEditorDrag(piece, source, clientX, clientY) {
+    cleanupPositionEditorDragListeners();
+    positionEditor.dragging = { piece, source };
+    positionEditor.hoverSquare = getBoardSquareFromClientPoint(clientX, clientY);
+    setPositionEditorGhost(piece, clientX, clientY);
+    updatePositionEditorPanels();
+    renderPositionEditorBoard();
+    document.addEventListener('pointermove', onPositionEditorPointerMove);
+    document.addEventListener('pointerup', onPositionEditorPointerUp);
+    document.addEventListener('pointercancel', onPositionEditorPointerUp);
+}
+
+function onPositionEditorBoardPointerDown(event) {
+    if (!positionEditor.enabled || event.button !== 0) return;
+    const square = getBoardSquareFromClientPoint(event.clientX, event.clientY);
+    if (!square || !positionEditor.grid) return;
+
+    const piece = positionEditor.grid[square.row]?.[square.col];
+    if (!piece) return;
+
+    event.preventDefault();
+    positionEditor.grid[square.row][square.col] = null;
+    beginPositionEditorDrag(
+        piece,
+        { type: 'board', col: square.col, row: square.row },
+        event.clientX,
+        event.clientY
+    );
+}
+
+function onPositionEditorPointerMove(event) {
+    if (!positionEditor.dragging) return;
+    movePositionEditorGhost(event.clientX, event.clientY);
+    const nextSquare = getBoardSquareFromClientPoint(event.clientX, event.clientY);
+    const prev = positionEditor.hoverSquare;
+    const changed = (!prev && nextSquare) || (prev && !nextSquare)
+        || (prev && nextSquare && (prev.col !== nextSquare.col || prev.row !== nextSquare.row));
+    if (changed) {
+        positionEditor.hoverSquare = nextSquare;
+        renderPositionEditorBoard();
+    }
+}
+
+function onPositionEditorPointerUp(event) {
+    if (!positionEditor.dragging) return;
+
+    const drag = positionEditor.dragging;
+    const targetSquare = getBoardSquareFromClientPoint(event.clientX, event.clientY);
+    const dropToPalette = isPositionEditorDropZone(event.clientX, event.clientY);
+
+    if (targetSquare && positionEditor.grid) {
+        positionEditor.grid[targetSquare.row][targetSquare.col] = drag.piece;
+    } else if (drag.source.type === 'board' && positionEditor.grid && !dropToPalette) {
+        positionEditor.grid[drag.source.row][drag.source.col] = drag.piece;
+    }
+
+    positionEditor.dragging = null;
+    positionEditor.hoverSquare = null;
+    hidePositionEditorGhost();
+    cleanupPositionEditorDragListeners();
+    updatePositionEditorPanels();
+    renderPositionEditorBoard();
+}
+
+function setPositionEditorTurn(turn) {
+    if (!positionEditor.enabled) return;
+    positionEditor.turn = turn === 'b' ? 'b' : 'w';
+    updatePositionEditorPanels();
+    renderPositionEditorBoard();
+    setStatus(`Position editor: ${positionEditor.turn === 'w' ? 'red' : 'black'} to move`);
+}
+
+function startPositionEditor() {
+    if (!isPositionEditingAvailable()) return;
+
+    const sourceFen = getEditorSourceFen();
+    const validation = XiangqiRules.validatePosition(sourceFen);
+    if (!validation.valid) {
+        alert(`Cannot edit this position yet:\n${validation.reason}`);
+        setStatus(`Position editor blocked: ${validation.reason}`);
+        return;
+    }
+
+    const parsed = XiangqiRules.parseFEN(validation.normalizedFen);
+    positionEditor.enabled = true;
+    positionEditor.turn = parsed.turn || 'w';
+    positionEditor.grid = cloneEditorGrid(parsed.grid);
+    positionEditor.dragging = null;
+    positionEditor.hoverSquare = null;
+
+    buildPositionEditorPalette();
+    renderer.humanInteractive = false;
+    renderer.clearSelection();
+    hideGameOver();
+    updatePositionEditorPanels();
+    renderPositionEditorBoard();
+    updateUI();
+    setStatus('Position editor enabled');
+}
+
+function finishPositionEditor() {
+    if (!positionEditor.enabled) return;
+
+    if (positionEditor.dragging && positionEditor.grid) {
+        const drag = positionEditor.dragging;
+        if (drag.source.type === 'board') {
+            positionEditor.grid[drag.source.row][drag.source.col] = drag.piece;
+        }
+        positionEditor.dragging = null;
+        positionEditor.hoverSquare = null;
+        hidePositionEditorGhost();
+        cleanupPositionEditorDragListeners();
+    }
+
+    const currentFen = XiangqiRules.gridToFen(positionEditor.grid, positionEditor.turn);
+    const validation = XiangqiRules.validatePosition(currentFen);
+    if (!validation.valid) {
+        renderPositionEditorBoard();
+        alert(`Invalid position:\n${validation.reason}`);
+        setStatus(`Invalid position: ${validation.reason}`);
+        return;
+    }
+
+    const normalizedFen = validation.normalizedFen;
+    const parsed = XiangqiRules.parseFEN(normalizedFen);
+    document.getElementById('fen-input').value = normalizedFen;
+    const g = activeGame();
+    if (g && g.status === 'waiting') {
+        g.fen = normalizedFen;
+        g.turn = parsed.turn || 'w';
+        g.lastMove = null;
+    }
+
+    positionEditor.enabled = false;
+    positionEditor.turn = parsed.turn || 'w';
+    positionEditor.grid = null;
+    positionEditor.dragging = null;
+    positionEditor.hoverSquare = null;
+    hidePositionEditorGhost();
+    cleanupPositionEditorDragListeners();
+    updatePositionEditorPanels();
+    renderer.clearSelection();
+    renderer.render(normalizedFen);
+    syncTimerPreviewFromSettings();
+    updateUI();
+    updateTurnIndicator();
+    setStatus('Position updated');
+}
+
+function togglePositionEditor() {
+    if (positionEditor.enabled) {
+        finishPositionEditor();
+    } else {
+        startPositionEditor();
+    }
+}
 
 /**
  * Get or create a WASM Pikafish engine for a player side.
@@ -176,6 +567,62 @@ function waitForLocalHumanMove(g) {
     });
 }
 
+function resolvePendingLocalHumanMove(g, move = null) {
+    if (!g || !g._humanMoveResolve) return;
+    const resolve = g._humanMoveResolve;
+    g._humanMoveResolve = null;
+    resolve(move);
+}
+
+function getLocalTurnRemainingMs(g, side) {
+    if (!g || !g.timer.enabled) return null;
+    const remainingSeconds = side === 'w' ? g.timer.redTime : g.timer.blackTime;
+    if (!Number.isFinite(remainingSeconds)) return 0;
+    return Math.max(0, remainingSeconds * 1000);
+}
+
+function finishLocalGameOnTimeout(g, side) {
+    if (!g || g.status !== 'playing') return false;
+
+    if (side === 'w') {
+        g.timer.redTime = 0;
+    } else {
+        g.timer.blackTime = 0;
+    }
+    g.timer.activeSide = null;
+    g.timer.lastSync = Date.now();
+    resolvePendingLocalHumanMove(g, null);
+
+    const loser = side === 'w' ? 'red' : 'black';
+    const winner = side === 'w' ? 'black' : 'red';
+    finishLocalGame(g, winner, formatTimeoutReason(loser));
+    return true;
+}
+
+function runLocalTurnWithTimeout(g, side, actionPromise) {
+    const remainingMs = getLocalTurnRemainingMs(g, side);
+    if (remainingMs == null) return actionPromise;
+
+    if (remainingMs <= 0) {
+        finishLocalGameOnTimeout(g, side);
+        return Promise.resolve(null);
+    }
+
+    let timeoutId = null;
+    const timeoutPromise = new Promise(resolve => {
+        timeoutId = setTimeout(() => {
+            finishLocalGameOnTimeout(g, side);
+            resolve(null);
+        }, remainingMs);
+    });
+
+    return Promise.race([actionPromise, timeoutPromise]).finally(() => {
+        if (timeoutId != null) {
+            clearTimeout(timeoutId);
+        }
+    });
+}
+
 /**
  * Compute a WASM pikafish move for a local game. Returns ICCS string.
  */
@@ -245,7 +692,9 @@ function finishLocalGame(g, winner, reason) {
     g.status = 'finished';
     stopTimerInterval(g);
     g.timer.activeSide = null;
+    resolvePendingLocalHumanMove(g, null);
     cleanupWasmEngines(g.gameId);
+    recordPendingFinishedGame(g, winner, reason);
 
     if (isActiveVisible(g.gameId)) {
         let msg;
@@ -258,11 +707,16 @@ function finishLocalGame(g, winner, reason) {
             msg = reason || 'Game over';
         }
         setStatus(msg);
+        updateTimerDisplay();
         updateUI();
         updateHumanInteractive();
     }
 
-    // POST final result to server for logging (fire-and-forget)
+    if (isHistoryTabActive()) {
+        loadHistoryList();
+    }
+
+    // POST final result to server for logging.
     postGameResult(g.gameId, g.moveHistory.map(m => m.move), winner, reason);
 }
 
@@ -270,8 +724,25 @@ function finishLocalGame(g, winner, reason) {
  * POST final game result to server for logging.
  */
 function postGameResult(gameId, moves, winner, reason) {
-    apiPostWithRetry(`/api/game/${gameId}/finish`, { moves, winner, reason })
-        .catch(e => console.warn('[finish] server log failed:', e.message));
+    return apiPostWithRetry(`/api/game/${gameId}/finish`, { moves, winner, reason })
+        .then(result => {
+            pendingFinishedGames.delete(gameId);
+            if (isHistoryTabActive()) {
+                loadHistoryList();
+            }
+            return result;
+        })
+        .catch(e => {
+            const pending = pendingFinishedGames.get(gameId);
+            if (pending) {
+                pending.sync_failed = true;
+            }
+            if (isHistoryTabActive()) {
+                applyHistoryFilters();
+            }
+            console.warn('[finish] server log failed:', e.message);
+            return null;
+        });
 }
 
 /**
@@ -319,12 +790,14 @@ async function clientGameLoop(gameId) {
         let moveStr = null;
         try {
             if (playerType === 'human') {
-                moveStr = await waitForLocalHumanMove(g);
+                moveStr = await runLocalTurnWithTimeout(g, side, waitForLocalHumanMove(g));
             } else if (playerType === 'pikafish') {
-                moveStr = await computeLocalPikafishMove(gameId, sideName, g.fen);
+                moveStr = await runLocalTurnWithTimeout(g, side, computeLocalPikafishMove(gameId, sideName, g.fen));
             } else if (playerType === 'random') {
-                await new Promise(r => setTimeout(r, 300));
-                moveStr = chooseRandomMove(g.fen);
+                moveStr = await runLocalTurnWithTimeout(g, side, (async () => {
+                    await new Promise(r => setTimeout(r, 300));
+                    return chooseRandomMove(g.fen);
+                })());
             }
         } catch (e) {
             console.error(`[local] Move error for ${sideName}:`, e);
@@ -340,7 +813,7 @@ async function clientGameLoop(gameId) {
                 g.timer.redTime -= elapsed;
                 if (g.timer.redTime <= 0) {
                     g.timer.redTime = 0;
-                    finishLocalGame(g, 'black', `red ran out of time (超时判负)`);
+                    finishLocalGame(g, 'black', formatTimeoutReason('red'));
                     return;
                 }
                 g.timer.redTime += g.timer.increment || 0;
@@ -348,7 +821,7 @@ async function clientGameLoop(gameId) {
                 g.timer.blackTime -= elapsed;
                 if (g.timer.blackTime <= 0) {
                     g.timer.blackTime = 0;
-                    finishLocalGame(g, 'red', `black ran out of time (超时判负)`);
+                    finishLocalGame(g, 'red', formatTimeoutReason('black'));
                     return;
                 }
                 g.timer.blackTime += g.timer.increment || 0;
@@ -815,6 +1288,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-flip-board').addEventListener('click', toggleBoardFlipped);
     document.getElementById('btn-new-game').addEventListener('click', onNewGame);
     document.getElementById('btn-leaderboard').addEventListener('click', toggleLeaderboard);
+    document.getElementById('btn-edit-position').addEventListener('click', togglePositionEditor);
+    document.getElementById('btn-editor-turn-red').addEventListener('click', () => setPositionEditorTurn('w'));
+    document.getElementById('btn-editor-turn-black').addEventListener('click', () => setPositionEditorTurn('b'));
+
+    // Canvas pointerdown for position editor drag
+    canvas.addEventListener('pointerdown', (e) => {
+        if (positionEditor.enabled) {
+            onPositionEditorBoardPointerDown(e);
+        }
+    });
 
     // Pikafish settings toggle
     const pikafishEnabled = document.getElementById('pikafish-enabled');
@@ -1266,11 +1749,7 @@ async function onPause() {
                 g.status = 'paused';
                 stopTimerInterval(g);
                 // If waiting for human move, cancel the wait
-                if (g._humanMoveResolve) {
-                    const resolve = g._humanMoveResolve;
-                    g._humanMoveResolve = null;
-                    resolve(null); // resolve with null to unblock the loop
-                }
+                resolvePendingLocalHumanMove(g, null); // resolve with null to unblock the loop
                 setStatus('Game paused');
             } else if (g.status === 'paused') {
                 // Handle seek if view index is not at latest
@@ -1331,11 +1810,7 @@ async function onReset() {
         // Stop local game loop
         g.status = 'finished';
         g._localLoopPaused = false;
-        if (g._humanMoveResolve) {
-            const resolve = g._humanMoveResolve;
-            g._humanMoveResolve = null;
-            resolve(null);
-        }
+        resolvePendingLocalHumanMove(g, null);
         if (g._resumeResolve) {
             const resolve = g._resumeResolve;
             g._resumeResolve = null;
@@ -1453,11 +1928,8 @@ async function submitHumanMove(move) {
 
     if (g.isLocal) {
         // Local game: resolve the promise that clientGameLoop is awaiting
-        if (g._humanMoveResolve) {
-            const resolve = g._humanMoveResolve;
-            g._humanMoveResolve = null;
-            resolve(move);
-        }
+        if (g.status !== 'playing') return;
+        resolvePendingLocalHumanMove(g, move);
     } else {
         // Server-driven game: optimistic render + POST to server
         const result = XiangqiRules.applyMove(g.fen, move);
@@ -1703,6 +2175,7 @@ function updateUI() {
     document.getElementById('fen-input').disabled = isGameActive;
     document.getElementById('btn-load-fen').disabled = isGameActive;
     document.getElementById('btn-init-fen').disabled = isGameActive;
+    document.getElementById('btn-edit-position').disabled = !isPositionEditingAvailable() && !positionEditor.enabled;
 
     // Step back/forward
     const moveCount = g ? g.moveHistory.length : 0;
@@ -1716,11 +2189,15 @@ function updateUI() {
 
 function updateTurnIndicator() {
     const el = document.getElementById('turn-indicator');
+    const textEl = document.getElementById('turn-indicator-text');
     const g = activeGame();
+
+    // Skip if position editor is active — it manages the turn indicator itself
+    if (positionEditor.enabled) return;
 
     if (!g) {
         el.className = '';
-        el.innerHTML = 'Ready to start';
+        textEl.innerHTML = 'Ready to start';
         return;
     }
 
@@ -1729,15 +2206,15 @@ function updateTurnIndicator() {
     el.className = side;
 
     if (g.viewIndex !== -1) {
-        el.innerHTML = g.viewIndex === 0
+        textEl.innerHTML = g.viewIndex === 0
             ? 'Viewing initial position'
             : `Viewing after move #${g.viewIndex} / ${g.moveHistory.length}`;
     } else if (g.status === 'finished') {
-        el.innerHTML = `Game Over`;
+        textEl.innerHTML = `Game Over`;
     } else if (g.status === 'waiting') {
-        el.innerHTML = `Ready to start`;
+        textEl.innerHTML = `Ready to start`;
     } else {
-        el.innerHTML = `<span class="turn-dot"></span> ${sideName}'s turn | Move #${g.moveHistory.length + 1}`;
+        textEl.innerHTML = `<span class="turn-dot"></span> ${sideName}'s turn | Move #${g.moveHistory.length + 1}`;
     }
 }
 
@@ -2346,6 +2823,43 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function historyEntryMatchesFilters(entry, filters) {
+    const { playerQ, resultQ, dateStart, dateEnd, movesMin, movesMax } = filters;
+
+    if (playerQ) {
+        const r = (entry.red_label || '').toLowerCase();
+        const b = (entry.black_label || '').toLowerCase();
+        if (!r.includes(playerQ) && !b.includes(playerQ)) return false;
+    }
+
+    const resultText = String(entry.result || '').toLowerCase();
+    if (resultQ === 'red' && !resultText.includes('red wins')) return false;
+    if (resultQ === 'black' && !resultText.includes('black wins')) return false;
+    if (resultQ === 'draw' && (resultText.includes('red wins') || resultText.includes('black wins'))) return false;
+
+    if (dateStart || dateEnd) {
+        const logDate = (entry.timestamp || '').slice(0, 10).replace(/\//g, '-');
+        if (!logDate) return false;
+        if (dateStart && logDate < dateStart) return false;
+        if (dateEnd && logDate > dateEnd) return false;
+    }
+
+    if (movesMin && entry.move_count < parseInt(movesMin, 10)) return false;
+    if (movesMax && entry.move_count > parseInt(movesMax, 10)) return false;
+    return true;
+}
+
+function getHistoryResultClass(entry) {
+    if (entry.winner === 'red') return 'result-red';
+    if (entry.winner === 'black') return 'result-black';
+    if (entry.winner === 'draw') return 'result-draw';
+
+    const resultText = String(entry.result || '').toLowerCase();
+    if (resultText.includes('red wins')) return 'result-red';
+    if (resultText.includes('black wins')) return 'result-black';
+    return 'result-draw';
+}
+
 async function loadHistoryList() {
     const listEl = document.getElementById('history-list');
     listEl.innerHTML = '<div class="history-empty">Loading...</div>';
@@ -2355,9 +2869,31 @@ async function loadHistoryList() {
             fetch('/api/logs').then(r => r.json()).catch(() => ({ logs: [] })),
         ]);
 
-        _historyActiveGames = (activeResp.games || []).filter(g => g.status !== 'finished');
-        _historyFinishedGames = (activeResp.games || []).filter(g => g.status === 'finished');
-        _historyLogs = logsResp.logs || [];
+        const activeGames = activeResp.games || [];
+        const logs = logsResp.logs || [];
+        const loggedGameIds = new Set(
+            logs.map(log => log.game_id).filter(Boolean)
+        );
+        const pendingIds = new Set(pendingFinishedGames.keys());
+
+        _historyLogs = logs;
+        _historyActiveGames = activeGames.filter(g => g.status !== 'finished' && !pendingIds.has(g.id));
+
+        const serverFinishedGames = activeGames
+            .filter(g => g.status === 'finished')
+            .map(g => ({
+                ...g,
+                result: formatGameResultText(g.winner, g.reason),
+                pending_log: false,
+                sync_failed: false,
+            }))
+            .filter(g => !loggedGameIds.has(g.id));
+
+        const serverFinishedIds = new Set(serverFinishedGames.map(g => g.id));
+        const pendingFinished = Array.from(pendingFinishedGames.values())
+            .filter(g => !loggedGameIds.has(g.id) && !serverFinishedIds.has(g.id));
+
+        _historyFinishedGames = [...pendingFinished, ...serverFinishedGames];
 
         applyHistoryFilters();
     } catch (e) {
@@ -2366,36 +2902,19 @@ async function loadHistoryList() {
 }
 
 function applyHistoryFilters() {
-    const playerQ = (document.getElementById('filter-player').value || '').trim().toLowerCase();
-    const resultQ = document.getElementById('filter-result').value;
-    const dateStart = document.getElementById('filter-date-start').value;
-    const dateEnd = document.getElementById('filter-date-end').value;
-    const movesMin = document.getElementById('filter-moves-min').value;
-    const movesMax = document.getElementById('filter-moves-max').value;
+    const filters = {
+        playerQ: (document.getElementById('filter-player').value || '').trim().toLowerCase(),
+        resultQ: document.getElementById('filter-result').value,
+        dateStart: document.getElementById('filter-date-start').value,
+        dateEnd: document.getElementById('filter-date-end').value,
+        movesMin: document.getElementById('filter-moves-min').value,
+        movesMax: document.getElementById('filter-moves-max').value,
+    };
 
-    const filtered = _historyLogs.filter(log => {
-        if (playerQ) {
-            const r = (log.red_label || '').toLowerCase();
-            const b = (log.black_label || '').toLowerCase();
-            if (!r.includes(playerQ) && !b.includes(playerQ)) return false;
-        }
-        if (resultQ === 'red' && !log.result.includes('red wins')) return false;
-        if (resultQ === 'black' && !log.result.includes('black wins')) return false;
-        if (resultQ === 'draw' && (log.result.includes('red wins') || log.result.includes('black wins'))) return false;
-        if (dateStart) {
-            const logDate = (log.timestamp || '').slice(0, 10).replace(/\//g, '-');
-            if (logDate < dateStart) return false;
-        }
-        if (dateEnd) {
-            const logDate = (log.timestamp || '').slice(0, 10).replace(/\//g, '-');
-            if (logDate > dateEnd) return false;
-        }
-        if (movesMin && log.move_count < parseInt(movesMin)) return false;
-        if (movesMax && log.move_count > parseInt(movesMax)) return false;
-        return true;
-    });
+    const filteredFinishedGames = _historyFinishedGames.filter(entry => historyEntryMatchesFilters(entry, filters));
+    const filteredLogs = _historyLogs.filter(entry => historyEntryMatchesFilters(entry, filters));
 
-    renderHistoryList(_historyActiveGames, _historyFinishedGames, filtered);
+    renderHistoryList(_historyActiveGames, filteredFinishedGames, filteredLogs);
 }
 
 function renderHistoryList(activeGames, finishedGames, logs) {
@@ -2444,12 +2963,38 @@ function renderHistoryList(activeGames, finishedGames, logs) {
         listEl.appendChild(header);
     }
 
+    for (const g of finishedGames) {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        const resultClass = getHistoryResultClass(g);
+        const metaText = g.sync_failed
+            ? 'Local only'
+            : (g.pending_log ? 'Finalizing...' : (g.timestamp || 'Finished'));
+        item.innerHTML = `
+            <div class="hist-meta">
+                <span class="hist-date">${escapeHtml(metaText)}</span>
+                <span class="hist-moves-count">${g.move_count} moves</span>
+            </div>
+            <div class="hist-players">
+                <span class="red-name">${escapeHtml(g.red_label)}</span>
+                <span class="vs">vs</span>
+                <span class="black-name">${escapeHtml(g.black_label)}</span>
+            </div>
+            <span class="hist-result ${resultClass}">${escapeHtml(g.result || formatGameResultText(g.winner, g.reason))}</span>
+        `;
+        item.addEventListener('click', () => {
+            if (gameStates.has(g.id)) {
+                switchActiveGame(g.id);
+                switchTab('log');
+            }
+        });
+        listEl.appendChild(item);
+    }
+
     for (const log of logs) {
         const item = document.createElement('div');
         item.className = 'history-item';
-        const resultClass = log.result.includes('red wins') ? 'result-red'
-            : log.result.includes('black wins') ? 'result-black'
-            : 'result-draw';
+        const resultClass = getHistoryResultClass(log);
         item.innerHTML = `
             <div class="hist-meta">
                 <span class="hist-date">${escapeHtml(log.timestamp)}</span>
@@ -2466,7 +3011,7 @@ function renderHistoryList(activeGames, finishedGames, logs) {
         listEl.appendChild(item);
     }
 
-    if (activeGames.length === 0 && logs.length === 0) {
+    if (activeGames.length === 0 && finishedGames.length === 0 && logs.length === 0) {
         listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
     }
 }
