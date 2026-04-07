@@ -130,6 +130,8 @@ const EDITOR_PIECE_HINTS = {
 };
 const EDITOR_RED_PALETTE = ['K', 'A', 'B', 'N', 'R', 'C', 'P'];
 const EDITOR_BLACK_PALETTE = ['k', 'a', 'b', 'n', 'r', 'c', 'p'];
+const POSITION_EDITOR_DOUBLE_TAP_MS = 360;
+const POSITION_EDITOR_DRAG_THRESHOLD_PX = 8;
 const positionEditor = {
     enabled: false,
     turn: 'w',
@@ -137,6 +139,7 @@ const positionEditor = {
     dragging: null,
     hoverSquare: null,
     ghostEl: null,
+    lastTap: null,
 };
 
 // --- WASM Pikafish engine instances ---
@@ -250,6 +253,45 @@ function cleanupPositionEditorDragListeners() {
     document.removeEventListener('pointercancel', onPositionEditorPointerUp);
 }
 
+function updateStartButtonState() {
+    const startBtn = document.getElementById('btn-new-game');
+    if (!startBtn) return;
+    startBtn.disabled = positionEditor.enabled;
+    startBtn.title = positionEditor.enabled
+        ? 'Finish editing the position before starting a game.'
+        : '新建并开始对局';
+}
+
+function clearPositionEditorTap() {
+    positionEditor.lastTap = null;
+}
+
+function isSameBoardSquare(a, b) {
+    return !!a && !!b && a.col === b.col && a.row === b.row;
+}
+
+function getEditorEventTimestamp(event) {
+    if (event && Number.isFinite(event.timeStamp)) return event.timeStamp;
+    return performance.now();
+}
+
+function isPositionEditorDoubleTap(square, piece, timestamp) {
+    const last = positionEditor.lastTap;
+    if (!last) return false;
+    return (timestamp - last.timestamp) <= POSITION_EDITOR_DOUBLE_TAP_MS
+        && last.piece === piece
+        && isSameBoardSquare(last, square);
+}
+
+function rememberPositionEditorTap(square, piece, timestamp) {
+    positionEditor.lastTap = {
+        col: square.col,
+        row: square.row,
+        piece,
+        timestamp,
+    };
+}
+
 function updatePositionEditorBoardClass() {
     const boardColumn = document.getElementById('board-column');
     if (!boardColumn) return;
@@ -281,6 +323,7 @@ function updatePositionEditorPanels() {
         editBtn.classList.toggle('is-active', positionEditor.enabled);
     }
 
+    updateStartButtonState();
     updatePositionEditorBoardClass();
 }
 
@@ -321,7 +364,13 @@ function isPositionEditorDropZone(clientX, clientY) {
 
 function beginPositionEditorDrag(piece, source, clientX, clientY) {
     cleanupPositionEditorDragListeners();
-    positionEditor.dragging = { piece, source };
+    positionEditor.dragging = {
+        piece,
+        source,
+        startClientX: clientX,
+        startClientY: clientY,
+        moved: false,
+    };
     positionEditor.hoverSquare = getBoardSquareFromClientPoint(clientX, clientY);
     setPositionEditorGhost(piece, clientX, clientY);
     updatePositionEditorPanels();
@@ -352,6 +401,13 @@ function onPositionEditorBoardPointerDown(event) {
 function onPositionEditorPointerMove(event) {
     if (!positionEditor.dragging) return;
     movePositionEditorGhost(event.clientX, event.clientY);
+    if (!positionEditor.dragging.moved) {
+        const dx = event.clientX - positionEditor.dragging.startClientX;
+        const dy = event.clientY - positionEditor.dragging.startClientY;
+        if (Math.hypot(dx, dy) >= POSITION_EDITOR_DRAG_THRESHOLD_PX) {
+            positionEditor.dragging.moved = true;
+        }
+    }
     const nextSquare = getBoardSquareFromClientPoint(event.clientX, event.clientY);
     const prev = positionEditor.hoverSquare;
     const changed = (!prev && nextSquare) || (prev && !nextSquare)
@@ -368,6 +424,11 @@ function onPositionEditorPointerUp(event) {
     const drag = positionEditor.dragging;
     const targetSquare = getBoardSquareFromClientPoint(event.clientX, event.clientY);
     const dropToPalette = isPositionEditorDropZone(event.clientX, event.clientY);
+    const timestamp = getEditorEventTimestamp(event);
+    const tapOnOriginalSquare = drag.source.type === 'board'
+        && !drag.moved
+        && !dropToPalette
+        && isSameBoardSquare(targetSquare, drag.source);
 
     if (targetSquare && positionEditor.grid) {
         positionEditor.grid[targetSquare.row][targetSquare.col] = drag.piece;
@@ -381,6 +442,24 @@ function onPositionEditorPointerUp(event) {
     cleanupPositionEditorDragListeners();
     updatePositionEditorPanels();
     renderPositionEditorBoard();
+
+    if (!positionEditor.grid) {
+        clearPositionEditorTap();
+        return;
+    }
+
+    if (tapOnOriginalSquare) {
+        if (isPositionEditorDoubleTap(drag.source, drag.piece, timestamp)) {
+            positionEditor.grid[drag.source.row][drag.source.col] = null;
+            clearPositionEditorTap();
+            renderPositionEditorBoard();
+        } else {
+            rememberPositionEditorTap(drag.source, drag.piece, timestamp);
+        }
+        return;
+    }
+
+    clearPositionEditorTap();
 }
 
 function setPositionEditorTurn(turn) {
@@ -408,6 +487,7 @@ function startPositionEditor() {
     positionEditor.grid = cloneEditorGrid(parsed.grid);
     positionEditor.dragging = null;
     positionEditor.hoverSquare = null;
+    positionEditor.lastTap = null;
 
     buildPositionEditorPalette();
     renderer.humanInteractive = false;
@@ -432,6 +512,7 @@ function finishPositionEditor() {
         hidePositionEditorGhost();
         cleanupPositionEditorDragListeners();
     }
+    clearPositionEditorTap();
 
     const currentFen = XiangqiRules.gridToFen(positionEditor.grid, positionEditor.turn);
     const validation = XiangqiRules.validatePosition(currentFen);
@@ -457,6 +538,7 @@ function finishPositionEditor() {
     positionEditor.grid = null;
     positionEditor.dragging = null;
     positionEditor.hoverSquare = null;
+    positionEditor.lastTap = null;
     hidePositionEditorGhost();
     cleanupPositionEditorDragListeners();
     updatePositionEditorPanels();
@@ -1588,6 +1670,11 @@ function _getPlayerLabel(side, configs) {
 
 async function onNewGame() {
     try {
+        if (positionEditor.enabled) {
+            setStatus('Finish position editing before starting a game');
+            return;
+        }
+
         const configs = getConfigs();
         for (const side of ['red', 'black']) {
             if (!configs[side]) {
@@ -2176,6 +2263,7 @@ function updateUI() {
     document.getElementById('btn-load-fen').disabled = isGameActive;
     document.getElementById('btn-init-fen').disabled = isGameActive;
     document.getElementById('btn-edit-position').disabled = !isPositionEditingAvailable() && !positionEditor.enabled;
+    updateStartButtonState();
 
     // Step back/forward
     const moveCount = g ? g.moveHistory.length : 0;
@@ -2612,11 +2700,13 @@ function drawEvalChart() {
 
     const xMin = 1;
     const xMax = Math.max(points[points.length - 1].x, 2);
+    const pointSpacing = plotW / Math.max(1, xMax - xMin);
+    const pointRadius = Math.max(1.2, Math.min(2.4, pointSpacing * 0.22));
 
     function toCanvasX(x) { return padL + ((x - xMin) / (xMax - xMin)) * plotW; }
     function toCanvasY(y) { return padT + ((yRange - y) / (2 * yRange)) * plotH; }
 
-    _chartState = { points, padL, padR, padT, padB, plotW, plotH, xMin, xMax, yRange, toCanvasX, toCanvasY, w, h };
+    _chartState = { points, padL, padR, padT, padB, plotW, plotH, xMin, xMax, yRange, toCanvasX, toCanvasY, pointRadius, w, h };
 
     ctx.clearRect(0, 0, w, h);
 
@@ -2710,7 +2800,7 @@ function drawEvalChart() {
         const cy = toCanvasY(p.y);
         ctx.fillStyle = p.y >= 0 ? '#b41e1e' : '#1a1a1a';
         ctx.beginPath();
-        ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+        ctx.arc(cx, cy, pointRadius, 0, Math.PI * 2);
         ctx.fill();
     }
 
@@ -2739,7 +2829,7 @@ function _initEvalChartTooltip() {
         const rect = canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
-        const { points, padL, padT, plotW, plotH, toCanvasX, toCanvasY } = _chartState;
+        const { points, padL, padT, plotW, plotH, toCanvasX, toCanvasY, pointRadius } = _chartState;
 
         if (mx < padL || mx > padL + plotW || my < padT || my > padT + plotH) {
             tooltip.style.display = 'none';
@@ -2788,7 +2878,7 @@ function _initEvalChartTooltip() {
         ctx.setLineDash([]);
         ctx.fillStyle = '#c07830';
         ctx.beginPath();
-        ctx.arc(hx, hy, 5, 0, Math.PI * 2);
+        ctx.arc(hx, hy, Math.max(pointRadius + 2, 4), 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2;
