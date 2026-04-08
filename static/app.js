@@ -48,6 +48,128 @@ function isHistoryTabActive() {
     return !!activeTab && activeTab.dataset.tab === 'history';
 }
 
+function isEditableShortcutTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest('input, textarea, select, [contenteditable], [contenteditable="true"], [contenteditable="plaintext-only"]');
+}
+
+function isBareShortcutContext(target) {
+    if (!(target instanceof Element)) return true;
+    if (isEditableShortcutTarget(target)) return false;
+    return !target.closest('button, a[href], summary, [tabindex]:not([tabindex="-1"])');
+}
+
+function isLeaderboardVisible() {
+    const page = document.getElementById('leaderboard-page');
+    return !!page && !page.classList.contains('hidden');
+}
+
+function isGameOverVisible() {
+    const banner = document.getElementById('game-over-banner');
+    return !!banner && !banner.classList.contains('hidden');
+}
+
+function cycleRightPanelTab(direction = 1) {
+    const buttons = Array.from(document.querySelectorAll('.tab-btn'));
+    if (buttons.length === 0) return false;
+
+    const activeIndex = buttons.findIndex(btn => btn.classList.contains('active'));
+    const currentIndex = activeIndex >= 0 ? activeIndex : 0;
+    const nextIndex = (currentIndex + direction + buttons.length) % buttons.length;
+    const nextButton = buttons[nextIndex];
+    if (!nextButton || !nextButton.dataset.tab) return false;
+
+    switchTab(nextButton.dataset.tab);
+    return true;
+}
+
+function closeTransientPanels() {
+    if (historyMode && isHistoryTabActive()) {
+        closeHistoryDetail();
+        return true;
+    }
+    if (isLeaderboardVisible()) {
+        toggleLeaderboard();
+        return true;
+    }
+    if (isGameOverVisible()) {
+        hideGameOver();
+        return true;
+    }
+    return false;
+}
+
+function canTogglePauseWithShortcut() {
+    const g = activeGame();
+    return !!g && (g.status === 'playing' || g.status === 'paused');
+}
+
+function handleGlobalKeydown(event) {
+    if (event.defaultPrevented || event.isComposing) return;
+
+    const target = event.target;
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    const primaryModifier = event.ctrlKey || event.metaKey;
+    const editableTarget = isEditableShortcutTarget(target);
+
+    if (historyMode && isHistoryTabActive() && !editableTarget) {
+        switch (event.key) {
+            case 'ArrowLeft':
+            case 'ArrowUp':
+                event.preventDefault();
+                historyStepPrev();
+                return;
+            case 'ArrowRight':
+            case 'ArrowDown':
+                event.preventDefault();
+                historyStepNext();
+                return;
+            case 'Home':
+                event.preventDefault();
+                historyGoFirst();
+                return;
+            case 'End':
+                event.preventDefault();
+                historyGoLast();
+                return;
+        }
+    }
+
+    if (key === 'escape' && closeTransientPanels()) {
+        event.preventDefault();
+        return;
+    }
+
+    if (isLeaderboardVisible()) return;
+
+    if (primaryModifier && !event.altKey && !event.repeat && !editableTarget) {
+        if (!event.shiftKey && event.code === 'Space' && canTogglePauseWithShortcut()) {
+            event.preventDefault();
+            onPause();
+            return;
+        }
+        if (!event.shiftKey && key === 'f') {
+            event.preventDefault();
+            onExportFEN();
+            return;
+        }
+    }
+
+    if (!isBareShortcutContext(target)) return;
+
+    if (!primaryModifier && !event.altKey && !event.shiftKey && !event.repeat && event.code === 'Space' && canTogglePauseWithShortcut()) {
+        event.preventDefault();
+        onPause();
+        return;
+    }
+
+    if (!primaryModifier && !event.altKey && event.key === 'Tab') {
+        if (cycleRightPanelTab(event.shiftKey ? -1 : 1)) {
+            event.preventDefault();
+        }
+    }
+}
+
 function recordPendingFinishedGame(g, winner, reason) {
     if (!g) return;
     pendingFinishedGames.set(g.gameId, {
@@ -1479,36 +1601,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btn-hist-autoplay').addEventListener('click', historyToggleAutoplay);
     document.getElementById('btn-hist-export-gif').addEventListener('click', historyExportGif);
 
-    // History keyboard navigation
-    document.addEventListener('keydown', (e) => {
-        if (!historyMode) return;
-        const activeTab = document.querySelector('.tab-btn.active');
-        if (!activeTab || activeTab.dataset.tab !== 'history') return;
-        switch (e.key) {
-            case 'ArrowLeft':
-            case 'ArrowUp':
-                e.preventDefault();
-                historyStepPrev();
-                break;
-            case 'ArrowRight':
-            case 'ArrowDown':
-                e.preventDefault();
-                historyStepNext();
-                break;
-            case 'Home':
-                e.preventDefault();
-                historyGoFirst();
-                break;
-            case 'End':
-                e.preventDefault();
-                historyGoLast();
-                break;
-            case 'Escape':
-                e.preventDefault();
-                closeHistoryDetail();
-                break;
-        }
-    });
+    document.addEventListener('keydown', handleGlobalKeydown);
 });
 
 // --- Presets ---
