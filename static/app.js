@@ -222,11 +222,28 @@ function createGameState(gameId, config = {}) {
         pendingLocalMove: null,   // optimistic move pending server confirmation
         _humanMoveResolve: null,  // resolve function for awaiting human move in local loop
         _localLoopPaused: false,  // pause flag for local game loop
+        _resignPending: false,    // true while waiting for a remote resign request to complete
     };
 }
 
 function activeGame() {
     return gameStates.get(activeGameId) || null;
+}
+
+function isCurrentTurnHuman(g) {
+    if (!g) return false;
+    const side = g.turn === 'w' ? 'red' : 'black';
+    const typeSelect = document.getElementById(`${side}-type`);
+    return !!typeSelect && typeSelect.value === 'human';
+}
+
+function canCurrentPlayerResign(g = activeGame()) {
+    return !!g
+        && !historyMode
+        && g.status === 'playing'
+        && g.viewIndex === -1
+        && isCurrentTurnHuman(g)
+        && !g._resignPending;
 }
 
 let renderer = null;
@@ -894,6 +911,7 @@ function applyLocalMove(g, moveStr) {
  */
 function finishLocalGame(g, winner, reason) {
     g.status = 'finished';
+    g._resignPending = false;
     stopTimerInterval(g);
     g.timer.activeSide = null;
     resolvePendingLocalHumanMove(g, null);
@@ -922,6 +940,23 @@ function finishLocalGame(g, winner, reason) {
 
     // POST final result to server for logging.
     postGameResult(g.gameId, g.moveHistory.map(m => m.move), winner, reason);
+}
+
+function applyRemoteGameOver(g, winner, reason) {
+    if (!g) return;
+    g.status = 'finished';
+    g._resignPending = false;
+    stopTimerInterval(g);
+    g.timer.activeSide = null;
+    cleanupWasmEngines(g.gameId);
+
+    if (isActiveVisible(g.gameId)) {
+        renderer.humanInteractive = false;
+        updateTimerDisplay();
+        showGameOver(winner, reason);
+        setStatus('Game over');
+        updateUI();
+    }
 }
 
 /**
@@ -1484,6 +1519,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Buttons
     document.getElementById('btn-pause').addEventListener('click', onPause);
     document.getElementById('btn-reset').addEventListener('click', onReset);
+    document.getElementById('btn-resign').addEventListener('click', onResign);
     document.getElementById('btn-step-back').addEventListener('click', onStepBack);
     document.getElementById('btn-step-forward').addEventListener('click', onStepForward);
     document.getElementById('btn-init-fen').addEventListener('click', onInitFEN);
@@ -2101,6 +2137,35 @@ function showViewIndex() {
     }
 }
 
+async function onResign() {
+    const g = activeGame();
+    if (!canCurrentPlayerResign(g)) return;
+
+    const loser = g.turn === 'w' ? 'red' : 'black';
+    const winner = loser === 'red' ? 'black' : 'red';
+    const loserLabel = loser === 'red' ? '红方' : '黑方';
+    if (!confirm(`确认${loserLabel}认输？确认后当前方立即判负。`)) {
+        return;
+    }
+
+    g._resignPending = true;
+    renderer.humanInteractive = false;
+    updateUI();
+
+    try {
+        if (!g.isLocal) {
+            await apiPost(`/api/game/${g.gameId}/pause`);
+            closeGameStream(g);
+        }
+        finishLocalGame(g, winner, `${loser} resigned`);
+    } catch (e) {
+        g._resignPending = false;
+        updateUI();
+        updateHumanInteractive();
+        alert('Failed to resign: ' + e.message);
+    }
+}
+
 async function submitHumanMove(move) {
     const g = activeGame();
     if (!g) return;
@@ -2134,9 +2199,7 @@ function updateHumanInteractive() {
         renderer.humanInteractive = false;
         return;
     }
-    const side = g.turn === 'w' ? 'red' : 'black';
-    const type = document.getElementById(`${side}-type`).value;
-    renderer.humanInteractive = (type === 'human');
+    renderer.humanInteractive = isCurrentTurnHuman(g) && !g._resignPending;
 }
 
 // --- SSE ---
@@ -2253,20 +2316,7 @@ function connectSSE(gameId) {
 
     es.addEventListener('game_over', (e) => {
         const data = JSON.parse(e.data);
-        g.status = 'finished';
-        stopTimerInterval(g);
-        g.timer.activeSide = null;
-
-        // Cleanup WASM engines for this game
-        cleanupWasmEngines(gameId);
-
-        if (isActiveVisible(gameId)) {
-            renderer.humanInteractive = false;
-            updateTimerDisplay();
-            showGameOver(data.winner, data.reason);
-            setStatus('Game over');
-            updateUI();
-        }
+        applyRemoteGameOver(g, data.winner, data.reason);
         // Refresh leaderboard after log is written
         setTimeout(() => {
             const activeTab = document.querySelector('.tab-btn.active');
@@ -2352,6 +2402,7 @@ function updateUI() {
     document.getElementById('btn-pause').disabled = !hasGame || (!isPlaying && !isPaused);
     document.getElementById('btn-pause').textContent = isPaused ? 'Resume' : 'Pause';
     document.getElementById('btn-reset').disabled = !hasGame || isWaiting;
+    document.getElementById('btn-resign').disabled = !canCurrentPlayerResign(g);
     document.getElementById('fen-input').disabled = isGameActive;
     document.getElementById('btn-load-fen').disabled = isGameActive;
     document.getElementById('btn-init-fen').disabled = isGameActive;
