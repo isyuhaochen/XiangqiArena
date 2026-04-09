@@ -449,6 +449,20 @@ function getAllLegalMoves(fen) {
     return moves;
 }
 
+function isKingsAdvisorsBishopsOnly(grid) {
+    for (let row = 0; row < 10; row++) {
+        for (let col = 0; col < 9; col++) {
+            const piece = grid[row][col];
+            if (!piece) continue;
+            const upper = piece.toUpperCase();
+            if (upper !== 'K' && upper !== 'A' && upper !== 'B') {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /**
  * Check if the game is over.
  * @param {string} fen - current position
@@ -462,6 +476,11 @@ function isGameOver(fen, moveCount, moveHistory) {
     // King missing
     if (!findKing(grid, 'w')) return { isOver: true, winner: 'black', reason: 'black wins - red king captured' };
     if (!findKing(grid, 'b')) return { isOver: true, winner: 'red', reason: 'red wins - black king captured' };
+
+    // Draw when both sides only have kings, advisors, and bishops left
+    if (isKingsAdvisorsBishopsOnly(grid)) {
+        return { isOver: true, winner: 'draw', reason: 'draw - only kings, advisors, and bishops remain' };
+    }
 
     // No legal moves
     const legal = getAllLegalMoves(fen);

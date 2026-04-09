@@ -554,8 +554,27 @@ class Board:
             return not self._is_in_check(self.turn)
         return False
 
+    def _is_kings_advisors_bishops_only(self):
+        """Return True when no rooks, knights, cannons, or pawns remain on the board."""
+        for row in self._grid:
+            for piece in row:
+                if piece is None:
+                    continue
+                if piece.upper() not in {'K', 'A', 'B'}:
+                    return False
+        return True
+
     def is_game_over(self):
         """Check if game is over. Returns (is_over, winner, reason)."""
+        # Check if a king is missing (captured - edge case)
+        if self._find_king('w') is None:
+            return True, 'black', "black wins - red king captured"
+        if self._find_king('b') is None:
+            return True, 'red', "red wins - black king captured"
+
+        if self._is_kings_advisors_bishops_only():
+            return True, 'draw', "draw - only kings, advisors, and bishops remain"
+
         legal = self.get_legal_moves()
         if not legal:
             if self._is_in_check(self.turn):
@@ -565,12 +584,6 @@ class Board:
                 # In Xiangqi, stalemate = the stalemated side loses
                 winner = 'black' if self.turn == 'w' else 'red'
                 return True, winner, f"stalemate - {winner} wins"
-
-        # Check if a king is missing (captured - edge case)
-        if self._find_king('w') is None:
-            return True, 'black', "black wins - red king captured"
-        if self._find_king('b') is None:
-            return True, 'red', "red wins - black king captured"
 
         # Draw by 30 full moves (60 plies) without any capture.
         if len(self.move_history) >= 60:
