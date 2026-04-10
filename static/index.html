@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BattleChess - Xiangqi Arena</title>
+    <title>BattleChess 象棋擂台</title>
     <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
-    <link rel="stylesheet" href="/static/style.css?v=20260406-03">
+    <link rel="stylesheet" href="/static/style.css?v=20260410-03">
 </head>
 <body>
     <header id="header">
@@ -13,72 +13,82 @@
             <img class="header-logo" src="/static/logo.png" alt="BattleChess logo">
             <div class="brand-copy">
                 <h1>BattleChess</h1>
-                <span class="subtitle">Xiangqi Arena</span>
+                <span class="subtitle" data-i18n="brand.subtitle">象棋擂台</span>
             </div>
         </div>
-        <div id="status-bar">Ready</div>
-        <button class="header-btn" id="btn-leaderboard" title="排行榜">Leaderboard</button>
+        <div id="status-bar" data-i18n="header.ready">就绪</div>
+        <div class="header-actions">
+            <label class="lang-switch" for="ui-language-select">
+                <span class="lang-switch-label" data-i18n="header.language">界面语言</span>
+                <select id="ui-language-select" aria-label="UI language">
+                    <option value="zh" data-i18n="lang.zh">中文</option>
+                    <option value="en" data-i18n="lang.en">English</option>
+                </select>
+            </label>
+            <button class="header-btn" id="btn-leaderboard" data-i18n="header.leaderboard" data-i18n-title="header.leaderboard">排行榜</button>
+        </div>
     </header>
 
     <main id="main-area">
-        <!-- Left: Board + Controls -->
         <div id="board-column">
             <canvas id="board-canvas"></canvas>
             <div id="timer-bar">
                 <div id="timer-live">
-                <div class="timer-side red-timer">
-                    <span class="timer-label">Red (红方)</span>
-                    <span class="timer-clock placeholder" id="timer-red">---</span>
-                </div>
-                <div class="timer-side black-timer">
-                    <span class="timer-label">Black (黑方)</span>
-                    <span class="timer-clock placeholder" id="timer-black">---</span>
-                </div>
+                    <div class="timer-side red-timer">
+                        <span class="timer-label" data-i18n="timer.redLabel">红方</span>
+                        <span class="timer-clock placeholder" id="timer-red">---</span>
+                    </div>
+                    <div class="timer-side black-timer">
+                        <span class="timer-label" data-i18n="timer.blackLabel">黑方</span>
+                        <span class="timer-clock placeholder" id="timer-black">---</span>
+                    </div>
                 </div>
                 <div id="editor-palette" class="hidden">
                     <div class="editor-palette-row red" id="editor-red-palette"></div>
                     <div class="editor-palette-row black" id="editor-black-palette"></div>
                 </div>
             </div>
+
             <div id="turn-indicator">
-                <div id="turn-indicator-text">Ready to start</div>
+                <div id="turn-indicator-text" data-i18n="turn.ready">准备开始</div>
                 <div id="editor-toolbar" class="hidden">
-                    <span class="editor-toolbar-label">先行</span>
-                    <button class="btn-small btn-secondary" id="btn-editor-turn-red" type="button">红</button>
-                    <button class="btn-small btn-secondary" id="btn-editor-turn-black" type="button">黑</button>
+                    <span class="editor-toolbar-label" data-i18n="editor.turnLabel">先行</span>
+                    <button class="btn-small btn-secondary" id="btn-editor-turn-red" type="button" data-i18n="editor.turnRed">红</button>
+                    <button class="btn-small btn-secondary" id="btn-editor-turn-black" type="button" data-i18n="editor.turnBlack">黑</button>
                 </div>
             </div>
 
             <div id="board-controls">
                 <div class="fen-row">
-                    <input type="text" id="fen-input" placeholder="FEN string...">
-                    <button class="btn-small" id="btn-load-fen">Load</button>
-                    <button class="btn-small btn-init" id="btn-init-fen">Init</button>
+                    <input type="text" id="fen-input" data-i18n-placeholder="board.fenPlaceholder" placeholder="FEN 串...">
+                    <button class="btn-small" id="btn-load-fen" data-i18n="board.load">载入</button>
+                    <button class="btn-small btn-init" id="btn-init-fen" data-i18n="board.init">初始</button>
                 </div>
                 <div class="control-buttons">
-                    <button class="btn-secondary" id="btn-pause" disabled>Pause</button>
-                    <button class="btn-secondary" id="btn-step-back" disabled title="Step Back">&#9664;&#9664;</button>
-                    <button class="btn-secondary" id="btn-step-forward" disabled title="Step Forward">&#9654;&#9654;</button>
-                    <button class="btn-danger" id="btn-reset" disabled>Reset</button>
-                    <button class="btn-danger" id="btn-resign" disabled title="Current human side resigns immediately">Resign</button>
-                    <button class="btn-secondary btn-small" id="btn-export-fen" title="Copy current FEN to clipboard">Export FEN</button>
-                    <button class="btn-secondary btn-small" id="btn-edit-position" title="Edit the board position before starting a game.">Edit</button>
-                    <button class="btn-secondary btn-small" id="btn-flip-board" title="Flip the board so black is at the bottom." aria-pressed="false">Flip</button>
+                    <button class="btn-secondary" id="btn-pause" disabled data-i18n="board.pause">暂停</button>
+                    <button class="btn-secondary" id="btn-step-back" disabled data-i18n-title="board.stepBackTitle" title="后退一步">&#9664;&#9664;</button>
+                    <button class="btn-secondary" id="btn-step-forward" disabled data-i18n-title="board.stepForwardTitle" title="前进一步">&#9654;&#9654;</button>
+                    <button class="btn-danger" id="btn-reset" disabled data-i18n="board.reset">重置</button>
+                    <button class="btn-danger" id="btn-resign" disabled data-i18n="board.resign" data-i18n-title="board.resignTitle" title="当前人类方立即认输">认输</button>
+                    <button class="btn-secondary btn-small" id="btn-export-fen" data-i18n="board.exportFen" data-i18n-title="board.exportFenTitle" title="复制当前 FEN 到剪贴板">导出 FEN</button>
+                    <button class="btn-secondary btn-small" id="btn-edit-position" data-i18n="editor.edit" data-i18n-title="board.editTitle" title="开局前编辑当前棋盘局面。">编辑</button>
+                    <button class="btn-secondary btn-small" id="btn-flip-board" data-i18n="board.flip" data-i18n-title="board.flipTitleDefault" title="翻转棋盘，让黑方位于底部。" aria-pressed="false">翻转</button>
                     <span class="control-spacer"></span>
-                    <button class="btn-new-game" id="btn-new-game" title="新建并开始对局">Start</button>
+                    <button class="btn-new-game" id="btn-new-game" data-i18n="board.start" data-i18n-title="board.startTitle" title="新建并开始对局">开始</button>
                 </div>
             </div>
         </div>
 
-        <!-- Right: Tabbed Panel -->
         <div id="right-column">
             <div class="tab-bar">
-                <button class="tab-btn" data-tab="log">记录</button>
-                <button class="tab-btn active" data-tab="settings">设置</button>
-                <button class="tab-btn" data-tab="history">历史 <span class="tab-refresh" id="btn-history-refresh" title="刷新">&#x21bb;</span></button>
+                <button class="tab-btn" data-tab="log" data-i18n="tabs.log">记录</button>
+                <button class="tab-btn active" data-tab="settings" data-i18n="tabs.settings">设置</button>
+                <button class="tab-btn" data-tab="history">
+                    <span data-i18n="tabs.history">历史</span>
+                    <span class="tab-refresh" id="btn-history-refresh" data-i18n-title="tabs.historyRefreshTitle" title="刷新历史">&#x21bb;</span>
+                </button>
             </div>
 
-            <!-- Log Tab -->
             <div class="tab-content" id="tab-log">
                 <div id="eval-chart-container">
                     <canvas id="eval-chart"></canvas>
@@ -86,237 +96,232 @@
                 <div id="game-log"></div>
             </div>
 
-            <!-- Settings Tab -->
             <div class="tab-content active" id="tab-settings">
                 <div class="config-side red">
-                    <h3><span class="dot red-dot"></span> Red (红方)</h3>
+                    <h3><span class="dot red-dot"></span> <span data-i18n="settings.red">红方</span></h3>
                     <div class="field">
-                        <label>Player Type</label>
+                        <label data-i18n="settings.playerType">玩家类型</label>
                         <select id="red-type">
-                            <option value="human">Human (人类)</option>
-                            <option value="random">Random (随机)</option>
-                            <option value="pikafish">Pikafish</option>
+                            <option value="human" data-i18n="settings.human">人类</option>
+                            <option value="random" data-i18n="settings.random">随机</option>
+                            <option value="pikafish" data-i18n="settings.pikafish">Pikafish</option>
                         </select>
                     </div>
                     <div class="llm-fields" id="red-llm-fields" style="display:none">
                         <div class="field">
-                            <label>Thinking Mode</label>
+                            <label data-i18n="settings.thinkingMode">思考模式</label>
                             <select id="red-thinking-mode">
-                                <option value="true" selected>On</option>
-                                <option value="false">Off</option>
+                                <option value="true" selected data-i18n="settings.on">开启</option>
+                                <option value="false" data-i18n="settings.off">关闭</option>
                             </select>
                         </div>
                         <div class="field">
-                            <label>Prompt</label>
-                            <select id="red-prompt-name">
-                            </select>
+                            <label data-i18n="settings.prompt">提示词</label>
+                            <select id="red-prompt-name"></select>
                         </div>
                         <div class="custom-llm-fields" id="red-custom-fields" style="display:none">
                             <div class="field">
-                                <label>API Base URL</label>
+                                <label data-i18n="settings.apiBase">API Base URL</label>
                                 <input type="text" id="red-api-base" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
                             </div>
                             <div class="field">
-                                <label>API Key</label>
+                                <label data-i18n="settings.apiKey">API Key</label>
                                 <input type="password" id="red-api-key" placeholder="sk-...">
                             </div>
                             <div class="field">
-                                <label>Model</label>
+                                <label data-i18n="settings.model">模型</label>
                                 <input type="text" id="red-model" placeholder="gpt-4o" value="gpt-4o">
                             </div>
                         </div>
                     </div>
                     <div class="engine-fields" id="red-pikafish-fields" style="display:none">
                         <div class="field">
-                            <label>Mode</label>
+                            <label data-i18n="settings.mode">模式</label>
                             <select id="red-pikafish-mode">
-                                <option value="movetime" selected>Think Time (限时)</option>
-                                <option value="depth">Depth (深度)</option>
+                                <option value="movetime" selected data-i18n="settings.movetime">限时</option>
+                                <option value="depth" data-i18n="settings.depth">深度</option>
                             </select>
                         </div>
                         <div class="field" id="red-pikafish-movetime-field">
-                            <label>Think Time (ms)</label>
+                            <label data-i18n="settings.thinkTimeMs">思考时间（毫秒）</label>
                             <input type="number" id="red-pikafish-movetime" value="1000" min="100" max="30000" step="100">
                         </div>
                         <div class="field" id="red-pikafish-depth-field" style="display:none">
-                            <label>Depth</label>
+                            <label data-i18n="settings.depth">深度</label>
                             <input type="number" id="red-pikafish-depth" value="20" min="1" max="40">
                         </div>
                     </div>
                 </div>
 
                 <div class="config-side black">
-                    <h3><span class="dot black-dot"></span> Black (黑方)</h3>
+                    <h3><span class="dot black-dot"></span> <span data-i18n="settings.black">黑方</span></h3>
                     <div class="field">
-                        <label>Player Type</label>
+                        <label data-i18n="settings.playerType">玩家类型</label>
                         <select id="black-type">
-                            <option value="human">Human (人类)</option>
-                            <option value="random" selected>Random (随机)</option>
-                            <option value="pikafish">Pikafish</option>
+                            <option value="human" data-i18n="settings.human">人类</option>
+                            <option value="random" selected data-i18n="settings.random">随机</option>
+                            <option value="pikafish" data-i18n="settings.pikafish">Pikafish</option>
                         </select>
                     </div>
                     <div class="llm-fields" id="black-llm-fields" style="display:none">
                         <div class="field">
-                            <label>Thinking Mode</label>
+                            <label data-i18n="settings.thinkingMode">思考模式</label>
                             <select id="black-thinking-mode">
-                                <option value="true" selected>On</option>
-                                <option value="false">Off</option>
+                                <option value="true" selected data-i18n="settings.on">开启</option>
+                                <option value="false" data-i18n="settings.off">关闭</option>
                             </select>
                         </div>
                         <div class="field">
-                            <label>Prompt</label>
-                            <select id="black-prompt-name">
-                            </select>
+                            <label data-i18n="settings.prompt">提示词</label>
+                            <select id="black-prompt-name"></select>
                         </div>
                         <div class="custom-llm-fields" id="black-custom-fields" style="display:none">
                             <div class="field">
-                                <label>API Base URL</label>
+                                <label data-i18n="settings.apiBase">API Base URL</label>
                                 <input type="text" id="black-api-base" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
                             </div>
                             <div class="field">
-                                <label>API Key</label>
+                                <label data-i18n="settings.apiKey">API Key</label>
                                 <input type="password" id="black-api-key" placeholder="sk-...">
                             </div>
                             <div class="field">
-                                <label>Model</label>
+                                <label data-i18n="settings.model">模型</label>
                                 <input type="text" id="black-model" placeholder="gpt-4o" value="gpt-4o">
                             </div>
                         </div>
                     </div>
                     <div class="engine-fields" id="black-pikafish-fields" style="display:none">
                         <div class="field">
-                            <label>Mode</label>
+                            <label data-i18n="settings.mode">模式</label>
                             <select id="black-pikafish-mode">
-                                <option value="movetime" selected>Think Time (限时)</option>
-                                <option value="depth">Depth (深度)</option>
+                                <option value="movetime" selected data-i18n="settings.movetime">限时</option>
+                                <option value="depth" data-i18n="settings.depth">深度</option>
                             </select>
                         </div>
                         <div class="field" id="black-pikafish-movetime-field">
-                            <label>Think Time (ms)</label>
+                            <label data-i18n="settings.thinkTimeMs">思考时间（毫秒）</label>
                             <input type="number" id="black-pikafish-movetime" value="1000" min="100" max="30000" step="100">
                         </div>
                         <div class="field" id="black-pikafish-depth-field" style="display:none">
-                            <label>Depth</label>
+                            <label data-i18n="settings.depth">深度</label>
                             <input type="number" id="black-pikafish-depth" value="20" min="1" max="40">
                         </div>
                     </div>
                 </div>
 
                 <div class="config-side timer">
-                    <h3><span class="dot timer-dot"></span> Timer (计时模式)</h3>
+                    <h3><span class="dot timer-dot"></span> <span data-i18n="settings.timer">计时模式</span></h3>
                     <div class="field">
                         <label class="checkbox-label">
-                            <input type="checkbox" id="timer-enabled"> Enable (开启计时)
+                            <input type="checkbox" id="timer-enabled">
+                            <span data-i18n="settings.enableTimer">启用计时</span>
                         </label>
                     </div>
                     <div id="timer-options" style="display:none">
                         <div class="field">
-                            <label>Initial Time / 初始时间 (minutes)</label>
+                            <label data-i18n="settings.initialTimeMinutes">初始时间（分钟）</label>
                             <input type="number" id="timer-initial" value="30" min="1" max="180" step="1">
                         </div>
                         <div class="field">
-                            <label>Increment / 每步加秒 (seconds)</label>
+                            <label data-i18n="settings.incrementSeconds">每步加秒（秒）</label>
                             <input type="number" id="timer-increment" value="10" min="0" max="60" step="1">
                         </div>
                     </div>
                 </div>
 
                 <div class="config-side pikafish">
-                    <h3><span class="dot pikafish-dot"></span> Pikafish (引擎分析)</h3>
+                    <h3><span class="dot pikafish-dot"></span> <span data-i18n="settings.analysis">Pikafish 分析</span></h3>
                     <div class="field">
                         <label class="checkbox-label">
-                            <input type="checkbox" id="pikafish-enabled"> Enable
+                            <input type="checkbox" id="pikafish-enabled">
+                            <span data-i18n="settings.enable">启用</span>
                         </label>
                     </div>
                     <div id="pikafish-options">
                         <div class="field">
-                            <label>Mode</label>
+                            <label data-i18n="settings.mode">模式</label>
                             <select id="pikafish-mode">
-                                <option value="movetime" selected>Think Time (限时)</option>
-                                <option value="depth">Depth (深度)</option>
+                                <option value="movetime" selected data-i18n="settings.movetime">限时</option>
+                                <option value="depth" data-i18n="settings.depth">深度</option>
                             </select>
                         </div>
                         <div class="field" id="pikafish-movetime-field">
-                            <label>Think Time (ms)</label>
+                            <label data-i18n="settings.thinkTimeMs">思考时间（毫秒）</label>
                             <input type="number" id="pikafish-movetime" value="1000" min="100" max="30000" step="100">
                         </div>
                         <div class="field" id="pikafish-depth-field" style="display:none">
-                            <label>Depth</label>
+                            <label data-i18n="settings.depth">深度</label>
                             <input type="number" id="pikafish-depth" value="20" min="1" max="40">
                         </div>
                         <div class="field">
-                            <label>Score Type (分数类型)</label>
+                            <label data-i18n="settings.scoreType">分数类型</label>
                             <select id="pikafish-score-type">
-                                <option value="Elo" selected>Elo (等级分差)</option>
-                                <option value="PawnValueNormalized">Pawn (厘兵值)</option>
-                                <option value="Raw">Raw (原始值)</option>
+                                <option value="Elo" selected data-i18n="settings.scoreElo">等级分差</option>
+                                <option value="PawnValueNormalized" data-i18n="settings.scorePawn">厘兵值</option>
+                                <option value="Raw" data-i18n="settings.scoreRaw">原始值</option>
                             </select>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- History Tab -->
             <div class="tab-content" id="tab-history">
-                <!-- List view -->
                 <div id="history-list-view">
                     <div class="history-filter-bar">
                         <div class="filter-row">
-                            <input type="text" id="filter-player" class="filter-input" placeholder="搜索选手名...">
+                            <input type="text" id="filter-player" class="filter-input" data-i18n-placeholder="history.filterPlayerPlaceholder" placeholder="搜索选手名...">
                             <select id="filter-result" class="filter-select">
-                                <option value="">全部结果</option>
-                                <option value="red">红胜</option>
-                                <option value="black">黑胜</option>
-                                <option value="draw">和棋</option>
+                                <option value="" data-i18n="history.filterAll">全部结果</option>
+                                <option value="red" data-i18n="history.filterRed">红胜</option>
+                                <option value="black" data-i18n="history.filterBlack">黑胜</option>
+                                <option value="draw" data-i18n="history.filterDraw">和棋</option>
                             </select>
-                            <button class="btn-small" id="btn-filter-reset" title="重置筛选">重置</button>
+                            <button class="btn-small" id="btn-filter-reset" data-i18n="history.filterReset" data-i18n-title="history.filterResetTitle" title="重置筛选">重置</button>
                         </div>
                         <div class="filter-row">
-                            <label class="filter-label">日期</label>
+                            <label class="filter-label" data-i18n="history.filterDate">日期</label>
                             <input type="date" id="filter-date-start" class="filter-input filter-date">
                             <span class="filter-sep">~</span>
                             <input type="date" id="filter-date-end" class="filter-input filter-date">
-                            <label class="filter-label">步数</label>
-                            <input type="number" id="filter-moves-min" class="filter-input filter-num" placeholder="最少" min="0">
+                            <label class="filter-label" data-i18n="history.filterMoves">步数</label>
+                            <input type="number" id="filter-moves-min" class="filter-input filter-num" data-i18n-placeholder="history.filterMin" placeholder="最少" min="0">
                             <span class="filter-sep">~</span>
-                            <input type="number" id="filter-moves-max" class="filter-input filter-num" placeholder="最多" min="0">
+                            <input type="number" id="filter-moves-max" class="filter-input filter-num" data-i18n-placeholder="history.filterMax" placeholder="最多" min="0">
                         </div>
                     </div>
                     <div id="history-list" class="history-list"></div>
                 </div>
 
-                <!-- Detail view (hidden by default) -->
-                <div id="history-detail-view" style="display: none;">
+                <div id="history-detail-view" style="display:none;">
                     <div class="history-detail-header">
-                        <button class="btn-small" id="btn-history-back">&larr; 返回</button>
+                        <button class="btn-small" id="btn-history-back" data-i18n="history.back">返回</button>
                         <div class="history-detail-info" id="history-detail-info"></div>
                     </div>
                     <div class="history-move-nav">
-                        <button class="btn-small" id="btn-hist-first" title="第一步">&#x23EE;</button>
-                        <button class="btn-small" id="btn-hist-prev" title="上一步">&#x25C0;</button>
-                        <span id="hist-position-label">初始局面</span>
-                        <button class="btn-small" id="btn-hist-next" title="下一步">&#x25B6;</button>
-                        <button class="btn-small" id="btn-hist-last" title="最后一步">&#x23ED;</button>
+                        <button class="btn-small" id="btn-hist-first" data-i18n-title="history.firstTitle" title="第一步">&#x23EE;</button>
+                        <button class="btn-small" id="btn-hist-prev" data-i18n-title="history.prevTitle" title="上一步">&#x25C0;</button>
+                        <span id="hist-position-label" data-i18n="history.initialPosition">初始局面</span>
+                        <button class="btn-small" id="btn-hist-next" data-i18n-title="history.nextTitle" title="下一步">&#x25B6;</button>
+                        <button class="btn-small" id="btn-hist-last" data-i18n-title="history.lastTitle" title="最后一步">&#x23ED;</button>
                         <span class="nav-separator"></span>
-                        <button class="btn-small btn-autoplay" id="btn-hist-autoplay" title="自动播放">&#x25B6; Auto</button>
-                        <button class="btn-small btn-export-gif" id="btn-hist-export-gif" title="下载当前对局回放 GIF">GIF</button>
+                        <button class="btn-small btn-autoplay" id="btn-hist-autoplay" data-i18n="history.autoplay" data-i18n-title="history.autoplayTitle" title="自动播放">&#x25B6; 自动播放</button>
+                        <button class="btn-small btn-export-gif" id="btn-hist-export-gif" data-i18n-title="history.exportGifTitle" title="下载当前对局回放 GIF">GIF</button>
                     </div>
                     <div id="history-move-list" class="history-move-list"></div>
                 </div>
             </div>
+        </div>
     </main>
 
-    <!-- Leaderboard (full page, hidden by default) -->
     <div id="leaderboard-page" class="hidden">
         <div id="leaderboard-content"></div>
     </div>
 
-    <!-- Game Over Banner -->
     <div id="game-over-banner" class="game-over-banner hidden" onclick="hideGameOver()">
         <div class="banner-content">
-            <h2>Game Over</h2>
+            <h2 data-i18n="banner.gameOver">对局结束</h2>
             <p class="reason"></p>
-            <button class="btn-secondary" onclick="hideGameOver()">Close</button>
+            <button class="btn-secondary" onclick="hideGameOver()" data-i18n="banner.close">关闭</button>
         </div>
     </div>
 
@@ -324,6 +329,7 @@
     <script src="/static/xiangqi-rules.js?v=20260406-02"></script>
     <script src="/static/gif.js?v=20260406-02"></script>
     <script src="/static/engine/pikafish-wasm.js?v=20260406-02"></script>
-    <script src="/static/app.js?v=20260406-02"></script>
+    <script src="/static/ui-lang.js?v=20260410-03"></script>
+    <script src="/static/app.js?v=20260410-03"></script>
 </body>
 </html>

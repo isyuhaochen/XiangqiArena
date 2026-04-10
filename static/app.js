@@ -7,7 +7,27 @@
 const DEFAULT_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w';
 const TIMER_PLACEHOLDER = '---';
 const DEFAULT_TIMER_INITIAL_SECONDS = 30 * 60;
+const uiI18n = window.BattleChessI18n || {
+    t: (key) => key,
+    getLanguage: () => 'en',
+    sideLabel: (side) => side,
+    applyI18nAttributes: () => {},
+    setLanguage: () => 'en',
+};
+const t = (key, params = {}) => uiI18n.t(key, params);
 const TIMEOUT_REASON_SUFFIX = '(\u8d85\u65f6\u5224\u8d1f)';
+
+function getUILanguage() {
+    return uiI18n.getLanguage();
+}
+
+function isChineseUI() {
+    return getUILanguage() === 'zh';
+}
+
+function uiSideLabel(side, options = {}) {
+    return uiI18n.sideLabel(side, options);
+}
 
 // --- Multi-game state ---
 const gameStates = new Map(); // gameId → game state object
@@ -29,18 +49,135 @@ const HISTORY_GIF_FINAL_DELAY_MS = 1500;
 const HISTORY_GIF_PROGRESS_YIELD_EVERY = 4;
 
 function formatTimeoutReason(sideName) {
-    return `${sideName} ran out of time ${TIMEOUT_REASON_SUFFIX}`;
+    return `${sideName} ran out of time`;
+}
+
+function parseResultText(resultText) {
+    const text = String(resultText || '').trim();
+    const lower = text.toLowerCase();
+    if (!text || lower === 'unfinished') {
+        return { winner: null, reason: '' };
+    }
+    if (lower === 'draw') {
+        return { winner: 'draw', reason: '' };
+    }
+    if (lower.startsWith('draw - ')) {
+        return { winner: 'draw', reason: text.slice(7).trim() };
+    }
+    const winMatch = text.match(/^(red|black)\s+wins(?:\s*-\s*(.+))?$/i);
+    if (winMatch) {
+        return {
+            winner: winMatch[1].toLowerCase(),
+            reason: (winMatch[2] || '').trim(),
+        };
+    }
+    return { winner: null, reason: text };
+}
+
+function resolveEntryWinner(entry) {
+    if (entry && entry.winner) return entry.winner;
+    return parseResultText(entry && entry.result).winner;
+}
+
+function resolveEntryReason(entry) {
+    if (entry && typeof entry.reason === 'string') return entry.reason;
+    return parseResultText(entry && entry.result).reason;
+}
+
+function translateResultReason(reason, winner = null) {
+    const clean = String(reason || '').trim();
+    if (!clean) return '';
+
+    if (/^red ran out of time(?:\s*\(超时判负\))?$/i.test(clean)) return t('reason.redTimeout');
+    if (/^black ran out of time(?:\s*\(超时判负\))?$/i.test(clean)) return t('reason.blackTimeout');
+    if (/^red resigned$/i.test(clean)) return t('reason.redResigned');
+    if (/^black resigned$/i.test(clean)) return t('reason.blackResigned');
+    if (/^checkmate - red wins$/i.test(clean)) return t('reason.checkmateRed');
+    if (/^checkmate - black wins$/i.test(clean)) return t('reason.checkmateBlack');
+    if (/^stalemate - red wins$/i.test(clean)) return t('reason.stalemateRed');
+    if (/^stalemate - black wins$/i.test(clean)) return t('reason.stalemateBlack');
+    if (/^draw - only kings, advisors, and bishops remain$/i.test(clean)) return t('reason.drawOnlyKings');
+    if (/^draw - 30 full moves without capture$/i.test(clean)) return t('reason.drawNoCapture');
+    if (winner === 'draw' && /^draw$/i.test(clean)) return '';
+    return clean;
+}
+
+function formatHistoryMovesCount(count) {
+    return t('history.movesCount', { count });
+}
+
+function formatLeaderboardGamesCount(count) {
+    return t('leaderboard.gamesCount', { count });
+}
+
+function localizePlayerLabel(label) {
+    const text = String(label || '').trim();
+    if (text === 'Human') return t('settings.human');
+    if (text === 'Random') return t('settings.random');
+    if (text === 'Pikafish') return t('settings.pikafish');
+    const llmMatch = text.match(/^LLM \((.+)\)$/);
+    if (llmMatch && isChineseUI()) return `LLM（${llmMatch[1]}）`;
+    return text;
 }
 
 function formatGameResultText(winner, reason) {
-    const cleanReason = String(reason || '').trim();
+    const cleanReason = translateResultReason(reason, winner);
     if (winner === 'draw') {
-        return cleanReason || 'draw';
+        return cleanReason || t('result.draw');
     }
     if (winner) {
-        return cleanReason ? `${winner} wins - ${cleanReason}` : `${winner} wins`;
+        const side = uiSideLabel(winner);
+        return cleanReason
+            ? t('result.winWithReason', { side, reason: cleanReason })
+            : t('result.win', { side });
     }
-    return cleanReason || 'unfinished';
+    return cleanReason || t('result.unfinished');
+}
+
+function normalizeResultReasonText(reason) {
+    const clean = String(reason || '').trim();
+    if (!clean) return '';
+
+    const parsed = parseResultText(clean);
+    if (parsed.winner && parsed.reason) {
+        return parsed.reason;
+    }
+    return clean;
+}
+
+function translateResultReason(reason, winner = null) {
+    const raw = String(reason || '').trim();
+    const clean = normalizeResultReasonText(reason);
+    if (!clean) return '';
+
+    if (/^red ran out of time(?:\s*\(.*\))?$/i.test(clean)) return t('reason.redTimeout');
+    if (/^black ran out of time(?:\s*\(.*\))?$/i.test(clean)) return t('reason.blackTimeout');
+    if (/^red resigned$/i.test(clean)) return t('reason.redResigned');
+    if (/^black resigned$/i.test(clean)) return t('reason.blackResigned');
+    if (/^red king captured$/i.test(clean)) return t('reason.redKingCaptured');
+    if (/^black king captured$/i.test(clean)) return t('reason.blackKingCaptured');
+    if (/^checkmate(?:\s*-\s*(?:red|black)\s+wins)?$/i.test(clean)) return t('reason.checkmateReason');
+    if (/^stalemate(?:\s*-\s*(?:red|black)\s+wins)?$/i.test(clean)) return t('reason.stalemateReason');
+    if (/^(?:draw\s*-\s*)?only kings, advisors, and bishops remain$/i.test(clean)) return t('reason.drawOnlyKingsReason');
+    if (/^(?:draw\s*-\s*)?30 full moves without capture$/i.test(clean)) return t('reason.drawNoCaptureReason');
+    if (winner === 'draw' && /^draw$/i.test(raw)) return '';
+    return clean;
+}
+
+function formatGameResultText(winner, reason) {
+    const cleanReason = translateResultReason(reason, winner);
+    if (winner === 'draw') {
+        return cleanReason
+            ? t('result.drawWithReason', { reason: cleanReason })
+            : t('result.draw');
+    }
+    if (winner) {
+        const side = uiSideLabel(winner);
+        return cleanReason
+            ? t('result.winWithReason', { side, reason: cleanReason })
+            : t('result.win', { side });
+    }
+    return cleanReason || t('result.unfinished');
 }
 
 function isHistoryTabActive() {
@@ -281,6 +418,19 @@ const positionEditor = {
     lastTap: null,
 };
 
+function getEditorPieceName(piece) {
+    const key = `editor.pieceName.${piece}`;
+    const translated = t(key);
+    return translated === key ? piece : translated;
+}
+
+function updatePositionEditorPaletteTitles() {
+    document.querySelectorAll('.editor-piece-chip').forEach((chip) => {
+        const piece = chip.dataset.piece || '';
+        chip.title = getEditorPieceName(piece) || piece;
+    });
+}
+
 // --- WASM Pikafish engine instances ---
 // Per-game player engines (keyed by gameId, value: { red: PikafishWasm, black: PikafishWasm })
 const wasmPlayerEngines = new Map();
@@ -370,7 +520,7 @@ function buildPositionEditorPalette() {
             chip.className = `editor-piece-chip ${colorClass}`;
             chip.dataset.piece = piece;
             chip.innerHTML = `<span class="editor-piece-token">${EDITOR_PIECE_CHARS[piece] || piece}</span>`;
-            chip.title = EDITOR_PIECE_NAMES[piece] || piece;
+            chip.title = getEditorPieceName(piece) || piece;
             chip.addEventListener('pointerdown', (event) => {
                 if (!positionEditor.enabled || event.button !== 0) return;
                 event.preventDefault();
@@ -397,8 +547,8 @@ function updateStartButtonState() {
     if (!startBtn) return;
     startBtn.disabled = positionEditor.enabled;
     startBtn.title = positionEditor.enabled
-        ? 'Finish editing the position before starting a game.'
-        : '新建并开始对局';
+        ? t('editor.finishBeforeStart')
+        : t('board.startTitle');
 }
 
 function clearPositionEditorTap() {
@@ -453,12 +603,12 @@ function updatePositionEditorPanels() {
     if (editorToolbar) editorToolbar.classList.toggle('hidden', !positionEditor.enabled);
     if (turnIndicator) turnIndicator.classList.toggle('edit-mode', positionEditor.enabled);
     if (turnText && positionEditor.enabled) {
-        turnText.textContent = 'Position Editor';
+        turnText.textContent = t('editor.title');
     }
     if (redTurnBtn) redTurnBtn.classList.toggle('is-active', positionEditor.enabled && positionEditor.turn === 'w');
     if (blackTurnBtn) blackTurnBtn.classList.toggle('is-active', positionEditor.enabled && positionEditor.turn === 'b');
     if (editBtn) {
-        editBtn.textContent = positionEditor.enabled ? 'Done' : 'Edit';
+        editBtn.textContent = positionEditor.enabled ? t('editor.done') : t('editor.edit');
         editBtn.classList.toggle('is-active', positionEditor.enabled);
     }
 
@@ -606,7 +756,7 @@ function setPositionEditorTurn(turn) {
     positionEditor.turn = turn === 'b' ? 'b' : 'w';
     updatePositionEditorPanels();
     renderPositionEditorBoard();
-    setStatus(`Position editor: ${positionEditor.turn === 'w' ? 'red' : 'black'} to move`);
+    setStatus(t('editor.turnToMove', { side: uiSideLabel(positionEditor.turn === 'w' ? 'red' : 'black') }));
 }
 
 function startPositionEditor() {
@@ -615,8 +765,8 @@ function startPositionEditor() {
     const sourceFen = getEditorSourceFen();
     const validation = XiangqiRules.validatePosition(sourceFen);
     if (!validation.valid) {
-        alert(`Cannot edit this position yet:\n${validation.reason}`);
-        setStatus(`Position editor blocked: ${validation.reason}`);
+        alert(t('editor.cannotEdit', { reason: validation.reason }));
+        setStatus(t('editor.blocked', { reason: validation.reason }));
         return;
     }
 
@@ -635,7 +785,7 @@ function startPositionEditor() {
     updatePositionEditorPanels();
     renderPositionEditorBoard();
     updateUI();
-    setStatus('Position editor enabled');
+    setStatus(t('editor.enabled'));
 }
 
 function finishPositionEditor() {
@@ -657,8 +807,8 @@ function finishPositionEditor() {
     const validation = XiangqiRules.validatePosition(currentFen);
     if (!validation.valid) {
         renderPositionEditorBoard();
-        alert(`Invalid position:\n${validation.reason}`);
-        setStatus(`Invalid position: ${validation.reason}`);
+        alert(t('editor.invalid', { reason: validation.reason }));
+        setStatus(t('editor.invalidStatus', { reason: validation.reason }));
         return;
     }
 
@@ -686,7 +836,7 @@ function finishPositionEditor() {
     syncTimerPreviewFromSettings();
     updateUI();
     updateTurnIndicator();
-    setStatus('Position updated');
+    setStatus(t('editor.updated'));
 }
 
 function togglePositionEditor() {
@@ -919,16 +1069,7 @@ function finishLocalGame(g, winner, reason) {
     recordPendingFinishedGame(g, winner, reason);
 
     if (isActiveVisible(g.gameId)) {
-        let msg;
-        if (winner === 'draw') {
-            msg = reason || 'Draw';
-        } else if (winner) {
-            const w = winner === 'red' ? 'Red' : 'Black';
-            msg = `${w} wins! ${reason || ''}`;
-        } else {
-            msg = reason || 'Game over';
-        }
-        setStatus(msg);
+        setStatus(formatGameResultText(winner, reason));
         updateTimerDisplay();
         updateUI();
         updateHumanInteractive();
@@ -954,7 +1095,7 @@ function applyRemoteGameOver(g, winner, reason) {
         renderer.humanInteractive = false;
         updateTimerDisplay();
         showGameOver(winner, reason);
-        setStatus('Game over');
+        setStatus(t('status.gameOver'));
         updateUI();
     }
 }
@@ -1006,11 +1147,11 @@ async function clientGameLoop(gameId) {
         // Update turn indicator
         if (isActiveVisible(gameId)) {
             if (playerType === 'human') {
-                setStatus(`Waiting for ${sideName} (human) to move...`);
+                setStatus(t('status.waitingHuman', { side: uiSideLabel(sideName) }));
             } else if (playerType === 'pikafish') {
-                setStatus(`${sideName === 'red' ? 'Red' : 'Black'} Pikafish (WASM) is thinking...`);
+                setStatus(t('status.pikafishThinking', { side: uiSideLabel(sideName) }));
             } else if (playerType === 'random') {
-                setStatus(`${sideName === 'red' ? 'Red' : 'Black'} (random) is thinking...`);
+                setStatus(t('status.randomThinking', { side: uiSideLabel(sideName) }));
             }
             updateTurnIndicator();
             updateHumanInteractive();
@@ -1149,8 +1290,8 @@ function syncFlipBoardButton() {
     btn.classList.toggle('is-active', boardFlipped);
     btn.setAttribute('aria-pressed', boardFlipped ? 'true' : 'false');
     btn.title = boardFlipped
-        ? 'Black-side view is active. Click to restore red-side view.'
-        : 'Flip the board so black is at the bottom.';
+        ? t('board.flipTitleActive')
+        : t('board.flipTitleDefault');
 }
 
 function setBoardFlipped(flipped) {
@@ -1464,19 +1605,133 @@ function closeGameTab(gameId) {
 
 // --- Initialization ---
 
+function refreshCurrentThinkingLogSummary() {
+    if (!_currentLogEntry) return;
+    const summary = _currentLogEntry.querySelector('summary');
+    const side = _currentLogEntry.dataset.side;
+    if (!summary || !side) return;
+    const g = activeGame();
+    const moveNum = g ? g.moveHistory.length + 1 : '?';
+    const dotClass = side === 'red' ? 'red-dot' : 'black-dot';
+    summary.innerHTML = `<span class="dot ${dotClass}"></span> ${t('log.moveThinking', {
+        move: moveNum,
+        side: uiSideLabel(side),
+    })}`;
+}
+
+function refreshHistoryDetailInfo() {
+    if (!historyGame) return;
+    const infoEl = document.getElementById('history-detail-info');
+    if (!infoEl) return;
+    infoEl.innerHTML = `
+        <span class="detail-players">${escapeHtml(localizePlayerLabel(historyGame.red_label))} ${escapeHtml(t('common.versus'))} ${escapeHtml(localizePlayerLabel(historyGame.black_label))}</span>
+        &nbsp;|&nbsp;${escapeHtml(historyGame.timestamp)}
+    `;
+}
+
+function refreshStatusText() {
+    if (historyGifExportInProgress) {
+        setStatus(t('status.exportingGif'));
+        return;
+    }
+    if (positionEditor.enabled) {
+        setStatus(t('editor.turnToMove', { side: uiSideLabel(positionEditor.turn === 'w' ? 'red' : 'black') }));
+        return;
+    }
+    const g = activeGame();
+    if (!g || g.status === 'waiting') {
+        setStatus(t('status.ready'));
+        return;
+    }
+    if (g.status === 'paused') {
+        setStatus(t('status.gamePaused'));
+        return;
+    }
+    if (g.status === 'finished') {
+        setStatus(t('status.gameOver'));
+        return;
+    }
+    const side = g.turn === 'w' ? 'red' : 'black';
+    const typeSelect = document.getElementById(`${side}-type`);
+    const typeVal = typeSelect ? typeSelect.value : 'human';
+    if (typeVal === 'human') {
+        setStatus(t('status.waitingHuman', { side: uiSideLabel(side) }));
+    } else if (typeVal === 'pikafish') {
+        setStatus(t('status.pikafishThinking', { side: uiSideLabel(side) }));
+    } else if (typeVal === 'random') {
+        setStatus(t('status.randomThinking', { side: uiSideLabel(side) }));
+    } else {
+        setStatus(t('status.sideThinking', { side: uiSideLabel(side) }));
+    }
+}
+
+function applyLocalizedUI() {
+    uiI18n.applyI18nAttributes(document);
+    document.title = t('page.indexTitle');
+    const languageSelect = document.getElementById('ui-language-select');
+    if (languageSelect) languageSelect.value = getUILanguage();
+    const autoplayBtn = document.getElementById('btn-hist-autoplay');
+    if (autoplayBtn) {
+        if (historyAutoplayTimer) {
+            autoplayBtn.textContent = `\u23F8 ${t('history.stop')}`;
+            autoplayBtn.title = t('history.stopTitle');
+        } else {
+            autoplayBtn.textContent = `\u25B6 ${t('history.autoplay')}`;
+            autoplayBtn.title = t('history.autoplayTitle');
+        }
+    }
+    updatePositionEditorPaletteTitles();
+    syncFlipBoardButton();
+    if (positionEditor.enabled) {
+        updatePositionEditorPanels();
+    } else {
+        updateTurnIndicator();
+    }
+    if (_currentLogEntry) {
+        refreshCurrentThinkingLogSummary();
+    } else if (activeGame()) {
+        rebuildGameLogFromHistory();
+    }
+    if (historyMode) {
+        refreshHistoryDetailInfo();
+        updateHistoryNavUI();
+    } else if (_historyLogs.length || _historyActiveGames.length || _historyFinishedGames.length || isHistoryTabActive()) {
+        applyHistoryFilters();
+    }
+    if (isGameOverVisible()) {
+        const banner = document.getElementById('game-over-banner');
+        showGameOver(banner.dataset.winner || '', banner.dataset.reason || '');
+    }
+    if (isLeaderboardVisible()) {
+        loadLeaderboard();
+    }
+    updateUI();
+    updateTimerDisplay();
+    refreshStatusText();
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('board-canvas');
     renderer = new BoardRenderer(canvas);
-    syncFlipBoardButton();
     renderer.render(DEFAULT_FEN);
 
     document.getElementById('fen-input').value = DEFAULT_FEN;
+    uiI18n.applyI18nAttributes(document);
+    document.title = t('page.indexTitle');
+    const languageSelect = document.getElementById('ui-language-select');
+    if (languageSelect) {
+        languageSelect.value = getUILanguage();
+        languageSelect.addEventListener('change', (event) => {
+            uiI18n.setLanguage(event.target.value);
+        });
+    }
+    document.addEventListener('battlechess:languagechange', applyLocalizedUI);
 
     // Load prompts and presets from server
     await loadPrompts();
     await loadPresets();
 
-    updateUI();
+    applyLocalizedUI();
     syncRightColumnHeight();
 
     // Tab switching
@@ -1664,7 +1919,8 @@ async function loadPresets() {
             }
             const customOpt = document.createElement('option');
             customOpt.value = 'llm:custom';
-            customOpt.textContent = 'Custom LLM (自定义)';
+            customOpt.dataset.i18n = 'settings.customLLM';
+            customOpt.textContent = t('settings.customLLM');
             typeSel.appendChild(customOpt);
         }
     } catch (e) {
@@ -1673,11 +1929,13 @@ async function loadPresets() {
             const typeSel = document.getElementById(`${side}-type`);
             const opt = document.createElement('option');
             opt.value = 'llm:custom';
-            opt.textContent = 'Custom LLM (自定义)';
+            opt.dataset.i18n = 'settings.customLLM';
+            opt.textContent = t('settings.customLLM');
             typeSel.appendChild(opt);
         }
     }
 
+    uiI18n.applyI18nAttributes(document);
     applyDefaultPikafishPaths();
 }
 
@@ -1788,9 +2046,9 @@ function getConfigs() {
 function _getPlayerLabel(side, configs) {
     const c = configs[side];
     if (!c) return side;
-    if (c.type === 'human') return 'Human';
-    if (c.type === 'random') return 'Random';
-    if (c.type === 'pikafish') return 'Pikafish';
+    if (c.type === 'human') return t('settings.human');
+    if (c.type === 'random') return t('settings.random');
+    if (c.type === 'pikafish') return t('settings.pikafish');
     if (c.type === 'llm') return c.preset || c.model || 'LLM';
     return c.type;
 }
@@ -1800,7 +2058,7 @@ function _getPlayerLabel(side, configs) {
 async function onNewGame() {
     try {
         if (positionEditor.enabled) {
-            setStatus('Finish position editing before starting a game');
+            setStatus(t('status.finishEditingBeforeStart'));
             return;
         }
 
@@ -1811,7 +2069,7 @@ async function onNewGame() {
             }
             if (configs[side].type === 'llm' && !configs[side].preset) {
                 if (!configs[side].api_base || !configs[side].api_key || !configs[side].model) {
-                    alert(`Please fill in ${side} side LLM configuration.`);
+                    alert(t('alerts.fillLLMConfig', { side: uiSideLabel(side, { lower: !isChineseUI() }) }));
                     return;
                 }
             }
@@ -1819,7 +2077,7 @@ async function onNewGame() {
 
         const fen = document.getElementById('fen-input').value.trim() || DEFAULT_FEN;
 
-        setStatus('Creating game...');
+        setStatus(t('status.creatingGame'));
         const pikafishConfig = {
             enabled: document.getElementById('pikafish-enabled').checked,
             mode: document.getElementById('pikafish-mode').value,
@@ -1879,27 +2137,27 @@ async function onNewGame() {
         updateHumanInteractive();
 
         // Auto-start the game
-        setStatus('Starting game...');
+        setStatus(t('status.startingGame'));
         g.status = 'playing';
         const startResult = await apiPostWithRetry(`/api/game/${game_id}/start`);
         g.isLocal = !!startResult.local;
 
         if (g.isLocal) {
             // Client-driven game: run loop locally, no SSE needed
-            setStatus('Game started (local)');
+            setStatus(t('status.gameStartedLocal'));
             updateUI();
             updateHumanInteractive();
             clientGameLoop(game_id); // fire-and-forget async
         } else {
             // Server-driven game (has LLM): use SSE as before
             connectSSE(game_id);
-            setStatus('Game started');
+            setStatus(t('status.gameStarted'));
             updateUI();
             updateHumanInteractive();
         }
     } catch (e) {
-        alert('Failed to create game: ' + e.message);
-        setStatus('Error: ' + e.message);
+        alert(t('alerts.failedCreateGame', { message: e.message }));
+        setStatus(t('status.error', { message: e.message }));
     }
 }
 
@@ -1966,7 +2224,7 @@ async function onPause() {
                 stopTimerInterval(g);
                 // If waiting for human move, cancel the wait
                 resolvePendingLocalHumanMove(g, null); // resolve with null to unblock the loop
-                setStatus('Game paused');
+                setStatus(t('status.gamePaused'));
             } else if (g.status === 'paused') {
                 // Handle seek if view index is not at latest
                 if (g.viewIndex !== -1 && g.viewIndex < g.moveHistory.length) {
@@ -1996,7 +2254,7 @@ async function onPause() {
                     // Loop may have exited; restart it
                     clientGameLoop(g.gameId);
                 }
-                setStatus('Game resumed');
+                setStatus(t('status.gameResumed'));
             }
         } else {
             // Server-driven game
@@ -2014,7 +2272,7 @@ async function onPause() {
         updateUI();
         updateHumanInteractive();
     } catch (e) {
-        alert('Error: ' + e.message);
+        alert(t('alerts.genericError', { message: e.message }));
     }
 }
 
@@ -2038,7 +2296,7 @@ async function onReset() {
         try { await apiPost(`/api/game/${g.gameId}/reset`); } catch (_) {}
     }
     stopTimerInterval(g);
-    enterReadyState(document.getElementById('fen-input').value.trim() || DEFAULT_FEN, 'Ready');
+    enterReadyState(document.getElementById('fen-input').value.trim() || DEFAULT_FEN, t('status.ready'));
 }
 
 function onInitFEN() {
@@ -2048,7 +2306,7 @@ function onInitFEN() {
     document.getElementById('fen-input').value = DEFAULT_FEN;
     if (!g) {
         renderer.render(DEFAULT_FEN);
-        setStatus('Initial position loaded');
+        setStatus(t('status.initialPositionLoaded'));
     }
 }
 
@@ -2060,9 +2318,9 @@ function onLoadFEN() {
     if (!fen) return;
     try {
         renderer.render(fen);
-        setStatus('FEN loaded');
+        setStatus(t('status.fenLoaded'));
     } catch (e) {
-        alert('Invalid FEN');
+        alert(t('alerts.invalidFEN'));
     }
 }
 
@@ -2089,12 +2347,12 @@ function onExportFEN() {
     }
     if (navigator.clipboard) {
         navigator.clipboard.writeText(fen).then(() => {
-            setStatus('FEN copied: ' + fen);
+            setStatus(t('status.fenCopied', { fen }));
         }).catch(() => {
-            prompt('Current FEN:', fen);
+            prompt(t('alerts.currentFEN'), fen);
         });
     } else {
-        prompt('Current FEN:', fen);
+        prompt(t('alerts.currentFEN'), fen);
     }
 }
 
@@ -2143,8 +2401,8 @@ async function onResign() {
 
     const loser = g.turn === 'w' ? 'red' : 'black';
     const winner = loser === 'red' ? 'black' : 'red';
-    const loserLabel = loser === 'red' ? '红方' : '黑方';
-    if (!confirm(`确认${loserLabel}认输？确认后当前方立即判负。`)) {
+    const loserLabel = uiSideLabel(loser);
+    if (!confirm(t('alerts.confirmResign', { side: loserLabel }))) {
         return;
     }
 
@@ -2162,7 +2420,7 @@ async function onResign() {
         g._resignPending = false;
         updateUI();
         updateHumanInteractive();
-        alert('Failed to resign: ' + e.message);
+        alert(t('alerts.failedResign', { message: e.message }));
     }
 }
 
@@ -2261,7 +2519,7 @@ function connectSSE(gameId) {
         const data = JSON.parse(e.data);
         if (isActiveVisible(gameId)) {
             const argsStr = data.args && Object.keys(data.args).length > 0 ? JSON.stringify(data.args) : '';
-            appendToCurrentLog(data.side, `> Tool: ${data.tool}(${argsStr})`, 'tool-call', false);
+            appendToCurrentLog(data.side, t('log.toolCall', { tool: data.tool, args: argsStr }), 'tool-call', false);
         }
     });
 
@@ -2269,7 +2527,7 @@ function connectSSE(gameId) {
         const data = JSON.parse(e.data);
         if (isActiveVisible(gameId)) {
             const resultStr = data.result.length > 200 ? data.result.slice(0, 200) + '...' : data.result;
-            appendToCurrentLog(data.side, `  Result: ${resultStr}`, 'tool-result', false);
+            appendToCurrentLog(data.side, t('log.toolResult', { result: resultStr }), 'tool-result', false);
         }
     });
 
@@ -2279,7 +2537,7 @@ function connectSSE(gameId) {
         if (data.fen) g.fen = data.fen;
         if (isActiveVisible(gameId)) {
             updateTurnIndicator();
-            setStatus(`${data.side === 'red' ? 'Red' : 'Black'} is thinking...`);
+            setStatus(t('status.sideThinking', { side: uiSideLabel(data.side) }));
             updateHumanInteractive();
             createLogEntry(data.side);
         }
@@ -2301,14 +2559,14 @@ function connectSSE(gameId) {
     es.addEventListener('waiting_human', (e) => {
         const data = JSON.parse(e.data);
         if (isActiveVisible(gameId)) {
-            setStatus(`Waiting for ${data.side} (human) to move...`);
+            setStatus(t('status.waitingHuman', { side: uiSideLabel(data.side) }));
             updateHumanInteractive();
         }
         // If this side is a Pikafish WASM player, auto-compute and submit move
         const sideType = document.getElementById(`${data.side}-type`).value;
         if (sideType === 'pikafish') {
             if (isActiveVisible(gameId)) {
-                setStatus(`${data.side === 'red' ? 'Red' : 'Black'} Pikafish (WASM) is thinking...`);
+                setStatus(t('status.pikafishThinking', { side: uiSideLabel(data.side) }));
             }
             wasmAutoMove(gameId, data.side);
         }
@@ -2327,7 +2585,7 @@ function connectSSE(gameId) {
     es.addEventListener('seek', (e) => {
         const data = JSON.parse(e.data);
         if (isActiveVisible(gameId)) {
-            applySeekState(data, `Position reset to move #${data.ply}`);
+            applySeekState(data, t('status.positionResetToMove', { ply: data.ply }));
         }
     });
 
@@ -2349,20 +2607,20 @@ function connectSSE(gameId) {
             stopTimerInterval(g);
             g.timer.activeSide = null;
             if (isActiveVisible(gameId)) {
-                setStatus('Game paused');
+                setStatus(t('status.gamePaused'));
                 updateTimerDisplay();
             }
         } else if (data.status === 'playing') {
             g.status = 'playing';
             if (isActiveVisible(gameId)) {
-                setStatus('Game resumed');
+                setStatus(t('status.gameResumed'));
             }
         } else if (data.status === 'finished') {
             g.status = 'finished';
             stopTimerInterval(g);
             g.timer.activeSide = null;
             if (isActiveVisible(gameId)) {
-                setStatus('Game over');
+                setStatus(t('status.gameOver'));
                 updateTimerDisplay();
             }
         }
@@ -2376,14 +2634,14 @@ function connectSSE(gameId) {
         try {
             const data = JSON.parse(e.data);
             if (activeGameId === gameId) {
-                setStatus('Error: ' + (data.message || 'Connection error'));
+                setStatus(t('status.error', { message: data.message || 'Connection error' }));
             }
         } catch (_) {}
     });
 
     es.onerror = () => {
         if (g.status === 'playing' && activeGameId === gameId) {
-            setStatus('Connection lost, reconnecting...');
+            setStatus(t('status.connectionLost'));
         }
     };
 }
@@ -2400,7 +2658,7 @@ function updateUI() {
     const hasGame = !!g;
 
     document.getElementById('btn-pause').disabled = !hasGame || (!isPlaying && !isPaused);
-    document.getElementById('btn-pause').textContent = isPaused ? 'Resume' : 'Pause';
+    document.getElementById('btn-pause').textContent = isPaused ? t('board.resume') : t('board.pause');
     document.getElementById('btn-reset').disabled = !hasGame || isWaiting;
     document.getElementById('btn-resign').disabled = !canCurrentPlayerResign(g);
     document.getElementById('fen-input').disabled = isGameActive;
@@ -2429,24 +2687,24 @@ function updateTurnIndicator() {
 
     if (!g) {
         el.className = '';
-        textEl.innerHTML = 'Ready to start';
+        textEl.innerHTML = t('turn.ready');
         return;
     }
 
     const side = g.turn === 'w' ? 'red' : 'black';
-    const sideName = side === 'red' ? 'Red (红方)' : 'Black (黑方)';
+    const sideName = uiSideLabel(side);
     el.className = side;
 
     if (g.viewIndex !== -1) {
         textEl.innerHTML = g.viewIndex === 0
-            ? 'Viewing initial position'
-            : `Viewing after move #${g.viewIndex} / ${g.moveHistory.length}`;
+            ? t('turn.viewInitial')
+            : t('turn.viewAfterMove', { current: g.viewIndex, total: g.moveHistory.length });
     } else if (g.status === 'finished') {
-        textEl.innerHTML = `Game Over`;
+        textEl.innerHTML = t('turn.gameOver');
     } else if (g.status === 'waiting') {
-        textEl.innerHTML = `Ready to start`;
+        textEl.innerHTML = t('turn.ready');
     } else {
-        textEl.innerHTML = `<span class="turn-dot"></span> ${sideName}'s turn | Move #${g.moveHistory.length + 1}`;
+        textEl.innerHTML = t('turn.sideTurn', { side: sideName, move: g.moveHistory.length + 1 });
     }
 }
 
@@ -2520,7 +2778,7 @@ let _currentStreamCls = null;
 
 function formatMoveLabel(moveData) {
     const move = moveData.move || '';
-    return moveData.move_zh ? `${move}（${moveData.move_zh}）` : move;
+    return isChineseUI() && moveData.move_zh ? `${move}（${moveData.move_zh}）` : move;
 }
 
 function getGameLogEl() {
@@ -2545,15 +2803,16 @@ function createLogEntry(side) {
 
     const g = activeGame();
     const moveNum = g ? g.moveHistory.length + 1 : '?';
-    const sideName = side === 'red' ? 'Red' : 'Black';
+    const sideName = uiSideLabel(side);
     const dotClass = side === 'red' ? 'red-dot' : 'black-dot';
 
     const details = document.createElement('details');
     details.className = `log-entry ${side}`;
     details.setAttribute('open', '');
+    details.dataset.side = side;
 
     const summary = document.createElement('summary');
-    summary.innerHTML = `<span class="dot ${dotClass}"></span> Move ${moveNum}: ${sideName} thinking...`;
+    summary.innerHTML = `<span class="dot ${dotClass}"></span> ${t('log.moveThinking', { move: moveNum, side: sideName })}`;
     details.appendChild(summary);
 
     const content = document.createElement('div');
@@ -2607,11 +2866,16 @@ function appendToCurrentLog(side, text, cls, streaming = false) {
 function finalizeLogEntry(moveData) {
     if (_currentLogEntry) {
         const summary = _currentLogEntry.querySelector('summary');
-        const sideName = moveData.side === 'red' ? 'Red' : 'Black';
+        const sideName = uiSideLabel(moveData.side);
         const dotClass = moveData.side === 'red' ? 'red-dot' : 'black-dot';
         const captured = moveData.captured ? ` x${moveData.captured}` : '';
         const existingBadge = summary.querySelector('.eval-badge');
-        summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${formatMoveLabel(moveData)}${captured}`;
+        summary.innerHTML = `<span class="dot ${dotClass}"></span> ${t('log.moveSummary', {
+            number: moveData.number,
+            side: sideName,
+            move: formatMoveLabel(moveData),
+            captured,
+        })}`;
         if (existingBadge) summary.appendChild(existingBadge);
         _currentLogEntry.removeAttribute('open');
     }
@@ -2651,7 +2915,7 @@ function applyEvalBadge(summary, score, scoreType) {
 
 function appendHistoricalLogEntry(moveData) {
     const g = activeGame();
-    const sideName = moveData.side === 'red' ? 'Red' : 'Black';
+    const sideName = uiSideLabel(moveData.side);
     const dotClass = moveData.side === 'red' ? 'red-dot' : 'black-dot';
     const captured = moveData.captured ? ` x${moveData.captured}` : '';
 
@@ -2659,7 +2923,12 @@ function appendHistoricalLogEntry(moveData) {
     details.className = `log-entry ${moveData.side}`;
 
     const summary = document.createElement('summary');
-    summary.innerHTML = `<span class="dot ${dotClass}"></span> #${moveData.number} ${sideName}: ${formatMoveLabel(moveData)}${captured}`;
+    summary.innerHTML = `<span class="dot ${dotClass}"></span> ${t('log.moveSummary', {
+        number: moveData.number,
+        side: sideName,
+        move: formatMoveLabel(moveData),
+        captured,
+    })}`;
     details.appendChild(summary);
 
     const content = document.createElement('div');
@@ -2999,8 +3268,8 @@ function _initEvalChartTooltip() {
         const g = activeGame();
         const scoreType = (g && g.scoreType) || 'Elo';
         const label = formatEvalScore(closest.raw, scoreType);
-        const sideLabel = closest.y >= 0 ? 'Red' : 'Black';
-        tooltip.textContent = `#${closest.x}  ${label}  (${sideLabel})`;
+        const sideLabel = uiSideLabel(closest.y >= 0 ? 'red' : 'black');
+        tooltip.textContent = t('eval.tooltip', { move: closest.x, score: label, side: sideLabel });
         tooltip.style.display = 'block';
         tooltip.style.left = (e.clientX + 12) + 'px';
         tooltip.style.top = (e.clientY - 28) + 'px';
@@ -3039,9 +3308,11 @@ function _initEvalChartTooltip() {
 function showGameOver(winner, reason) {
     const banner = document.getElementById('game-over-banner');
     banner.className = `game-over-banner ${winner}`;
+    banner.dataset.winner = winner || '';
+    banner.dataset.reason = reason || '';
     banner.querySelector('h2').textContent =
-        winner === 'red' ? 'Red Wins!' : winner === 'black' ? 'Black Wins!' : 'Draw';
-    banner.querySelector('.reason').textContent = reason;
+        winner === 'red' ? t('banner.redWins') : winner === 'black' ? t('banner.blackWins') : t('banner.draw');
+    banner.querySelector('.reason').textContent = translateResultReason(reason, winner);
     banner.classList.remove('hidden');
 }
 
@@ -3066,10 +3337,10 @@ function historyEntryMatchesFilters(entry, filters) {
         if (!r.includes(playerQ) && !b.includes(playerQ)) return false;
     }
 
-    const resultText = String(entry.result || '').toLowerCase();
-    if (resultQ === 'red' && !resultText.includes('red wins')) return false;
-    if (resultQ === 'black' && !resultText.includes('black wins')) return false;
-    if (resultQ === 'draw' && (resultText.includes('red wins') || resultText.includes('black wins'))) return false;
+    const winner = resolveEntryWinner(entry);
+    if (resultQ === 'red' && winner !== 'red') return false;
+    if (resultQ === 'black' && winner !== 'black') return false;
+    if (resultQ === 'draw' && winner !== 'draw') return false;
 
     if (dateStart || dateEnd) {
         const logDate = (entry.timestamp || '').slice(0, 10).replace(/\//g, '-');
@@ -3084,19 +3355,15 @@ function historyEntryMatchesFilters(entry, filters) {
 }
 
 function getHistoryResultClass(entry) {
-    if (entry.winner === 'red') return 'result-red';
-    if (entry.winner === 'black') return 'result-black';
-    if (entry.winner === 'draw') return 'result-draw';
-
-    const resultText = String(entry.result || '').toLowerCase();
-    if (resultText.includes('red wins')) return 'result-red';
-    if (resultText.includes('black wins')) return 'result-black';
+    const winner = resolveEntryWinner(entry);
+    if (winner === 'red') return 'result-red';
+    if (winner === 'black') return 'result-black';
     return 'result-draw';
 }
 
 async function loadHistoryList() {
     const listEl = document.getElementById('history-list');
-    listEl.innerHTML = '<div class="history-empty">Loading...</div>';
+    listEl.innerHTML = `<div class="history-empty">${escapeHtml(t('history.loading'))}</div>`;
     try {
         const [activeResp, logsResp] = await Promise.all([
             fetch('/api/games').then(r => r.json()).catch(() => ({ games: [] })),
@@ -3131,7 +3398,7 @@ async function loadHistoryList() {
 
         applyHistoryFilters();
     } catch (e) {
-        listEl.innerHTML = '<div class="history-empty">Failed to load history.</div>';
+        listEl.innerHTML = `<div class="history-empty">${escapeHtml(t('history.failed'))}</div>`;
     }
 }
 
@@ -3159,23 +3426,23 @@ function renderHistoryList(activeGames, finishedGames, logs) {
     if (activeGames.length > 0) {
         const header = document.createElement('div');
         header.className = 'history-section-header';
-        header.textContent = '\u8fdb\u884c\u4e2d (In Progress)';
+        header.textContent = t('history.inProgress');
         listEl.appendChild(header);
 
         for (const g of activeGames) {
             const item = document.createElement('div');
             item.className = 'history-item active-game';
-            const statusText = g.status === 'playing' ? '\u5bf9\u5c40\u4e2d' : g.status === 'paused' ? '\u5df2\u6682\u505c' : g.status;
+            const statusText = g.status === 'playing' ? t('history.playing') : g.status === 'paused' ? t('history.paused') : g.status;
             const statusClass = g.status === 'playing' ? 'status-playing' : 'status-paused';
             item.innerHTML = `
                 <div class="hist-meta">
                     <span class="hist-status ${statusClass}">${escapeHtml(statusText)}</span>
-                    <span class="hist-moves-count">${g.move_count} moves</span>
+                    <span class="hist-moves-count">${escapeHtml(formatHistoryMovesCount(g.move_count))}</span>
                 </div>
                 <div class="hist-players">
-                    <span class="red-name">${escapeHtml(g.red_label)}</span>
-                    <span class="vs">vs</span>
-                    <span class="black-name">${escapeHtml(g.black_label)}</span>
+                    <span class="red-name">${escapeHtml(localizePlayerLabel(g.red_label))}</span>
+                    <span class="vs">${escapeHtml(t('common.versus'))}</span>
+                    <span class="black-name">${escapeHtml(localizePlayerLabel(g.black_label))}</span>
                 </div>
             `;
             item.addEventListener('click', () => {
@@ -3193,7 +3460,7 @@ function renderHistoryList(activeGames, finishedGames, logs) {
     if (hasCompleted) {
         const header = document.createElement('div');
         header.className = 'history-section-header';
-        header.textContent = '\u5df2\u7ed3\u675f (Completed)';
+        header.textContent = t('history.completed');
         listEl.appendChild(header);
     }
 
@@ -3202,19 +3469,19 @@ function renderHistoryList(activeGames, finishedGames, logs) {
         item.className = 'history-item';
         const resultClass = getHistoryResultClass(g);
         const metaText = g.sync_failed
-            ? 'Local only'
-            : (g.pending_log ? 'Finalizing...' : (g.timestamp || 'Finished'));
+            ? t('history.localOnly')
+            : (g.pending_log ? t('history.finalizing') : (g.timestamp || t('history.finished')));
         item.innerHTML = `
             <div class="hist-meta">
                 <span class="hist-date">${escapeHtml(metaText)}</span>
-                <span class="hist-moves-count">${g.move_count} moves</span>
+                <span class="hist-moves-count">${escapeHtml(formatHistoryMovesCount(g.move_count))}</span>
             </div>
             <div class="hist-players">
-                <span class="red-name">${escapeHtml(g.red_label)}</span>
-                <span class="vs">vs</span>
-                <span class="black-name">${escapeHtml(g.black_label)}</span>
+                <span class="red-name">${escapeHtml(localizePlayerLabel(g.red_label))}</span>
+                <span class="vs">${escapeHtml(t('common.versus'))}</span>
+                <span class="black-name">${escapeHtml(localizePlayerLabel(g.black_label))}</span>
             </div>
-            <span class="hist-result ${resultClass}">${escapeHtml(g.result || formatGameResultText(g.winner, g.reason))}</span>
+            <span class="hist-result ${resultClass}">${escapeHtml(formatGameResultText(resolveEntryWinner(g), resolveEntryReason(g)))}</span>
         `;
         item.addEventListener('click', () => {
             if (gameStates.has(g.id)) {
@@ -3232,21 +3499,21 @@ function renderHistoryList(activeGames, finishedGames, logs) {
         item.innerHTML = `
             <div class="hist-meta">
                 <span class="hist-date">${escapeHtml(log.timestamp)}</span>
-                <span class="hist-moves-count">${log.move_count} moves</span>
+                <span class="hist-moves-count">${escapeHtml(formatHistoryMovesCount(log.move_count))}</span>
             </div>
             <div class="hist-players">
-                <span class="red-name">${escapeHtml(log.red_label)}</span>
-                <span class="vs">vs</span>
-                <span class="black-name">${escapeHtml(log.black_label)}</span>
+                <span class="red-name">${escapeHtml(localizePlayerLabel(log.red_label))}</span>
+                <span class="vs">${escapeHtml(t('common.versus'))}</span>
+                <span class="black-name">${escapeHtml(localizePlayerLabel(log.black_label))}</span>
             </div>
-            <span class="hist-result ${resultClass}">${escapeHtml(log.result)}</span>
+            <span class="hist-result ${resultClass}">${escapeHtml(formatGameResultText(resolveEntryWinner(log), resolveEntryReason(log)))}</span>
         `;
         item.addEventListener('click', () => openHistoryDetail(log.filename));
         listEl.appendChild(item);
     }
 
     if (activeGames.length === 0 && finishedGames.length === 0 && logs.length === 0) {
-        listEl.innerHTML = '<div class="history-empty">No game history yet.</div>';
+        listEl.innerHTML = `<div class="history-empty">${escapeHtml(t('history.noHistory'))}</div>`;
     }
 }
 
@@ -3256,7 +3523,7 @@ async function openHistoryDetail(filename) {
     const infoEl = document.getElementById('history-detail-info');
     const moveListEl = document.getElementById('history-move-list');
 
-    infoEl.textContent = 'Loading...';
+    infoEl.textContent = t('history.loading');
     moveListEl.innerHTML = '';
     listView.style.display = 'none';
     detailView.style.display = '';
@@ -3271,7 +3538,7 @@ async function openHistoryDetail(filename) {
         historyViewIndex = 0;
 
         infoEl.innerHTML = `
-            <span class="detail-players">${escapeHtml(game.red_label)} vs ${escapeHtml(game.black_label)}</span>
+            <span class="detail-players">${escapeHtml(localizePlayerLabel(game.red_label))} ${escapeHtml(t('common.versus'))} ${escapeHtml(localizePlayerLabel(game.black_label))}</span>
             &nbsp;|&nbsp;${escapeHtml(game.timestamp)}
         `;
 
@@ -3300,7 +3567,7 @@ async function openHistoryDetail(filename) {
         updateHistoryNavUI();
         updateHumanInteractive();
     } catch (e) {
-        infoEl.textContent = 'Failed to load game data.';
+        infoEl.textContent = t('history.failedGameData');
     }
 }
 
@@ -3357,7 +3624,7 @@ function updateHistoryNavUI() {
     const label = document.getElementById('hist-position-label');
 
     if (historyViewIndex === 0) {
-        label.textContent = 'Initial';
+        label.textContent = t('history.initial');
     } else {
         const m = moves[historyViewIndex - 1];
         label.textContent = `#${m.number} ${m.move}`;
@@ -3412,7 +3679,8 @@ function stopHistoryAutoplay() {
     }
     const btn = document.getElementById('btn-hist-autoplay');
     if (btn) {
-        btn.textContent = '\u25B6 Auto';
+        btn.textContent = `\u25B6 ${t('history.autoplay')}`;
+        btn.title = t('history.autoplayTitle');
         btn.classList.remove('playing');
     }
 }
@@ -3427,7 +3695,8 @@ function historyToggleAutoplay() {
     if (historyViewIndex >= maxIndex) return;
 
     const btn = document.getElementById('btn-hist-autoplay');
-    btn.textContent = '\u23F8 Stop';
+    btn.textContent = `\u23F8 ${t('history.stop')}`;
+    btn.title = t('history.stopTitle');
     btn.classList.add('playing');
 
     historyAutoplayTimer = setInterval(() => {
@@ -3474,18 +3743,18 @@ function buildHistoryGifFilename(game) {
 async function historyExportGif() {
     if (!historyGame || historyGifExportInProgress) return;
     if (typeof window.BattleChessGifEncoder !== 'function') {
-        setStatus('GIF export is unavailable in this browser.');
+        setStatus(t('status.exportGifUnavailable'));
         return;
     }
     if (!renderer) {
-        setStatus('Board renderer is not ready yet.');
+        setStatus(t('status.boardNotReady'));
         return;
     }
 
     stopHistoryAutoplay();
     historyGifExportInProgress = true;
     setHistoryGifButtonState('GIF...', true, true);
-    setStatus('Exporting replay GIF...');
+    setStatus(t('status.exportingGif'));
 
     const exportGame = historyGame;
     const initialFen = exportGame.initial_fen || DEFAULT_FEN;
@@ -3531,11 +3800,11 @@ async function historyExportGif() {
         const blob = encoder.finish();
         const filename = buildHistoryGifFilename(exportGame);
         triggerBlobDownload(blob, filename);
-        setStatus(`Replay GIF saved: ${filename}`);
+        setStatus(t('status.gifSaved', { filename }));
     } catch (e) {
         console.error('GIF export failed:', e);
         const message = e && e.message ? e.message : String(e);
-        setStatus(`GIF export failed: ${message}`);
+        setStatus(t('status.gifFailed', { message }));
     } finally {
         historyGifExportInProgress = false;
         setHistoryGifButtonState('GIF', false, false);
@@ -3575,7 +3844,7 @@ async function loadLeaderboard() {
         const logs = data.logs || [];
 
         if (logs.length === 0) {
-            container.innerHTML = '<div class="lb-empty">No games played yet.</div>';
+            container.innerHTML = `<div class="lb-empty">${escapeHtml(t('leaderboard.empty'))}</div>`;
             return;
         }
 
@@ -3583,10 +3852,9 @@ async function loadLeaderboard() {
         const stats = {};
 
         for (const log of logs) {
-            const redWin = log.result.includes('red wins');
-            const blackWin = log.result.includes('black wins');
-            if (redWin) totalRedWins++;
-            else if (blackWin) totalBlackWins++;
+            const winner = resolveEntryWinner(log);
+            if (winner === 'red') totalRedWins++;
+            else if (winner === 'black') totalBlackWins++;
             else totalDraws++;
 
             for (const label of [log.red_label, log.black_label]) {
@@ -3603,10 +3871,10 @@ async function loadLeaderboard() {
             if (rs) rs.asRed.total++;
             if (bs) bs.asBlack.total++;
 
-            if (redWin) {
+            if (winner === 'red') {
                 if (rs) { rs.wins++; rs.asRed.wins++; }
                 if (bs) { bs.losses++; bs.asBlack.losses++; }
-            } else if (blackWin) {
+            } else if (winner === 'black') {
                 if (bs) { bs.wins++; bs.asBlack.wins++; }
                 if (rs) { rs.losses++; rs.asRed.losses++; }
             } else {
@@ -3623,20 +3891,20 @@ async function loadLeaderboard() {
         entries.sort((a, b) => b.wins - a.wins || b.winRate - a.winRate || a.losses - b.losses);
 
         let html = `<div class="lb-summary">
-            <div class="lb-summary-item"><div class="lb-summary-val">${logs.length}</div><div class="lb-summary-label">Total Games</div></div>
-            <div class="lb-summary-item"><div class="lb-summary-val">${entries.length}</div><div class="lb-summary-label">Players</div></div>
-            <div class="lb-summary-item"><div class="lb-summary-val">${totalRedWins}</div><div class="lb-summary-label">Red Wins</div></div>
-            <div class="lb-summary-item"><div class="lb-summary-val">${totalBlackWins}</div><div class="lb-summary-label">Black Wins</div></div>
-            <div class="lb-summary-item"><div class="lb-summary-val">${totalDraws}</div><div class="lb-summary-label">Draws</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${logs.length}</div><div class="lb-summary-label">${escapeHtml(t('leaderboard.totalGames'))}</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${entries.length}</div><div class="lb-summary-label">${escapeHtml(t('leaderboard.players'))}</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${totalRedWins}</div><div class="lb-summary-label">${escapeHtml(t('leaderboard.redWins'))}</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${totalBlackWins}</div><div class="lb-summary-label">${escapeHtml(t('leaderboard.blackWins'))}</div></div>
+            <div class="lb-summary-item"><div class="lb-summary-val">${totalDraws}</div><div class="lb-summary-label">${escapeHtml(t('leaderboard.draws'))}</div></div>
         </div>`;
 
         html += `<table class="lb-table"><thead><tr>
-            <th class="num">#</th>
-            <th>Player</th>
-            <th class="stat">W</th><th class="stat">L</th><th class="stat">D</th>
-            <th class="rate">Win%</th>
-            <th class="side-group">As Red</th>
-            <th class="side-group">As Black</th>
+            <th class="num">${escapeHtml(t('leaderboard.rank'))}</th>
+            <th>${escapeHtml(t('leaderboard.player'))}</th>
+            <th class="stat">${escapeHtml(t('leaderboard.win'))}</th><th class="stat">${escapeHtml(t('leaderboard.loss'))}</th><th class="stat">${escapeHtml(t('leaderboard.draw'))}</th>
+            <th class="rate">${escapeHtml(t('leaderboard.winRateShort'))}</th>
+            <th class="side-group">${escapeHtml(t('leaderboard.asRed'))}</th>
+            <th class="side-group">${escapeHtml(t('leaderboard.asBlack'))}</th>
         </tr></thead><tbody>`;
 
         for (let i = 0; i < entries.length; i++) {
@@ -3652,8 +3920,8 @@ async function loadLeaderboard() {
             html += `<tr>
                 <td class="num${rankCls}">${rank}</td>
                 <td>
-                    <div class="lb-player-name" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</div>
-                    <div class="lb-player-games">${e.total} games</div>
+                    <div class="lb-player-name" title="${escapeHtml(localizePlayerLabel(e.name))}">${escapeHtml(localizePlayerLabel(e.name))}</div>
+                    <div class="lb-player-games">${escapeHtml(formatLeaderboardGamesCount(e.total))}</div>
                 </td>
                 <td class="stat lb-stat-w">${e.wins}</td>
                 <td class="stat lb-stat-l">${e.losses}</td>
@@ -3664,13 +3932,13 @@ async function loadLeaderboard() {
                         <div class="lb-bar-bg"><div class="lb-bar-fill ${rateCls}" style="width:${pct}%"></div></div>
                     </div>
                 </td>
-                <td class="stat side-detail"><div class="lb-side-detail">${e.asRed.wins}W ${e.asRed.losses}L ${e.asRed.draws}D</div><div class="lb-side-detail">Win ${redPct}% (${e.asRed.total} games)</div></td>
-                <td class="stat side-detail"><div class="lb-side-detail">${e.asBlack.wins}W ${e.asBlack.losses}L ${e.asBlack.draws}D</div><div class="lb-side-detail">Win ${blackPct}% (${e.asBlack.total} games)</div></td>
+                <td class="stat side-detail"><div class="lb-side-detail">${escapeHtml(t('leaderboard.sideRecord', { wins: e.asRed.wins, losses: e.asRed.losses, draws: e.asRed.draws }))}</div><div class="lb-side-detail">${escapeHtml(t('leaderboard.sideWinRate', { pct: redPct, count: e.asRed.total }))}</div></td>
+                <td class="stat side-detail"><div class="lb-side-detail">${escapeHtml(t('leaderboard.sideRecord', { wins: e.asBlack.wins, losses: e.asBlack.losses, draws: e.asBlack.draws }))}</div><div class="lb-side-detail">${escapeHtml(t('leaderboard.sideWinRate', { pct: blackPct, count: e.asBlack.total }))}</div></td>
             </tr>`;
         }
         html += '</tbody></table>';
         container.innerHTML = html;
     } catch (e) {
-        container.innerHTML = '<div class="lb-empty">Failed to load.</div>';
+        container.innerHTML = `<div class="lb-empty">${escapeHtml(t('leaderboard.failed'))}</div>`;
     }
 }
