@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leaderboard - BattleChess</title>
+    <title>BattleChess 排行榜</title>
     <link rel="icon" type="image/png" href="/static/logo.png?v=20260327-13">
     <style>
         :root {
@@ -29,21 +29,48 @@
             display: flex;
             align-items: center;
             gap: 16px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+            flex-wrap: wrap;
         }
         .header-logo { width: 40px; height: 40px; border-radius: 10px; }
         header h1 { font-size: 20px; font-weight: 800; }
         header .subtitle { font-size: 12px; opacity: 0.7; }
         .header-spacer { flex: 1; }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .lang-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(246, 224, 181, 0.16);
+            color: rgba(246, 224, 181, 0.9);
+            font-size: 12px;
+        }
+        .lang-switch select {
+            border: 1px solid rgba(246, 224, 181, 0.24);
+            border-radius: 6px;
+            background: rgba(58, 42, 24, 0.55);
+            color: #f6e0b5;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-family: inherit;
+        }
         .header-back {
             font-size: 13px;
-            color: rgba(246,224,181,0.85);
+            color: rgba(246, 224, 181, 0.85);
             text-decoration: none;
             padding: 6px 14px;
             border-radius: 6px;
             transition: background 0.15s, color 0.15s;
         }
-        .header-back:hover { background: rgba(255,255,255,0.12); color: #fff; }
+        .header-back:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 
         main {
             max-width: 800px;
@@ -65,7 +92,6 @@
             justify-content: space-between;
         }
         .card-header h2 { font-size: 18px; font-weight: 700; }
-        .total-games { font-size: 12px; color: var(--text-secondary); }
         .btn-refresh {
             border: 1px solid var(--border);
             background: var(--card-bg);
@@ -77,7 +103,6 @@
         }
         .btn-refresh:hover { border-color: var(--accent); color: var(--accent); }
 
-        /* Table */
         .lb-table { width: 100%; border-collapse: collapse; }
         .lb-table th {
             text-align: left;
@@ -93,7 +118,6 @@
         .lb-table th.num { text-align: center; width: 50px; }
         .lb-table th.stat { text-align: center; width: 60px; }
         .lb-table th.rate { text-align: center; width: 80px; }
-
         .lb-table td {
             padding: 12px 16px;
             font-size: 13px;
@@ -102,7 +126,6 @@
         }
         .lb-table tr:last-child td { border-bottom: none; }
         .lb-table tr:hover td { background: #faf3e6; }
-
         .lb-table td.num { text-align: center; font-weight: 700; font-size: 15px; color: var(--text-secondary); }
         .lb-table td.stat { text-align: center; font-family: var(--font-mono); font-size: 13px; }
         .lb-table td.rate { text-align: center; font-weight: 700; font-size: 14px; }
@@ -111,14 +134,8 @@
         .rank-2 { color: #8a8a8a; }
         .rank-3 { color: #b87333; }
 
-        .player-name {
-            font-weight: 600;
-            font-size: 14px;
-        }
-        .player-games {
-            font-size: 11px;
-            color: var(--text-secondary);
-        }
+        .player-name { font-weight: 600; font-size: 14px; }
+        .player-games { font-size: 11px; color: var(--text-secondary); }
 
         .stat-w { color: #2e7d32; }
         .stat-l { color: var(--red-color); }
@@ -128,7 +145,6 @@
         .rate-mid  { color: var(--accent); }
         .rate-low  { color: #999; }
 
-        /* Win rate bar */
         .rate-bar {
             display: flex;
             align-items: center;
@@ -142,11 +158,7 @@
             background: #ece6da;
             overflow: hidden;
         }
-        .rate-bar-fill {
-            height: 100%;
-            border-radius: 3px;
-            transition: width 0.3s;
-        }
+        .rate-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
         .rate-bar-fill.high { background: #4caf50; }
         .rate-bar-fill.mid  { background: var(--accent); }
         .rate-bar-fill.low  { background: #bbb; }
@@ -158,7 +170,6 @@
             font-size: 15px;
         }
 
-        /* Summary cards */
         .summary-row {
             display: flex;
             gap: 12px;
@@ -183,41 +194,90 @@
             color: var(--text-secondary);
             margin-top: 2px;
         }
+
+        @media (max-width: 760px) {
+            header { padding: 12px 16px; }
+            .summary-row { flex-wrap: wrap; }
+            .summary-card { min-width: calc(50% - 6px); }
+            .card-header { gap: 8px; }
+        }
     </style>
 </head>
 <body>
     <header>
         <img class="header-logo" src="/static/logo.png" alt="BattleChess logo">
         <div>
-            <h1>Leaderboard</h1>
-            <span class="subtitle">BattleChess - Xiangqi Arena</span>
+            <h1 data-i18n="leaderboard.title">排行榜</h1>
+            <span class="subtitle" data-i18n="brand.subtitle">象棋擂台</span>
         </div>
         <div class="header-spacer"></div>
-        <a href="/" class="header-back">&larr; Back to Arena</a>
+        <div class="header-actions">
+            <label class="lang-switch" for="ui-language-select">
+                <span data-i18n="header.language">界面语言</span>
+                <select id="ui-language-select">
+                    <option value="zh" data-i18n="lang.zh">中文</option>
+                    <option value="en" data-i18n="lang.en">English</option>
+                </select>
+            </label>
+            <a href="/" class="header-back">&larr; <span data-i18n="leaderboard.backToArena">返回擂台</span></a>
+        </div>
     </header>
 
     <main>
         <div class="summary-row" id="summary-row">
-            <div class="summary-card"><div class="val" id="sum-total">-</div><div class="label">Total Games</div></div>
-            <div class="summary-card"><div class="val" id="sum-players">-</div><div class="label">Players</div></div>
-            <div class="summary-card"><div class="val" id="sum-red">-</div><div class="label">Red Wins</div></div>
-            <div class="summary-card"><div class="val" id="sum-black">-</div><div class="label">Black Wins</div></div>
-            <div class="summary-card"><div class="val" id="sum-draw">-</div><div class="label">Draws</div></div>
+            <div class="summary-card"><div class="val" id="sum-total">-</div><div class="label" data-i18n="leaderboard.totalGames">总对局</div></div>
+            <div class="summary-card"><div class="val" id="sum-players">-</div><div class="label" data-i18n="leaderboard.players">选手数</div></div>
+            <div class="summary-card"><div class="val" id="sum-red">-</div><div class="label" data-i18n="leaderboard.redWins">红胜</div></div>
+            <div class="summary-card"><div class="val" id="sum-black">-</div><div class="label" data-i18n="leaderboard.blackWins">黑胜</div></div>
+            <div class="summary-card"><div class="val" id="sum-draw">-</div><div class="label" data-i18n="leaderboard.draws">和棋</div></div>
         </div>
 
         <div class="card">
             <div class="card-header">
-                <h2>Player Rankings</h2>
-                <button class="btn-refresh" id="btn-refresh" onclick="loadData()">&#x21bb; Refresh</button>
+                <h2 data-i18n="leaderboard.rankings">选手排名</h2>
+                <button class="btn-refresh" id="btn-refresh">&#x21bb; <span data-i18n="leaderboard.refresh">刷新</span></button>
             </div>
             <div id="table-container">
-                <div class="empty-state">Loading...</div>
+                <div class="empty-state" data-i18n="leaderboard.loading">加载中...</div>
             </div>
         </div>
     </main>
 
+    <script src="/static/ui-lang.js?v=20260410-01"></script>
     <script>
-        function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+        const i18n = window.BattleChessI18n;
+        const t = (key, params = {}) => i18n.t(key, params);
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function getWinner(entry) {
+            if (entry && entry.winner) return entry.winner;
+            const result = String((entry && entry.result) || '').toLowerCase();
+            if (result.startsWith('red wins')) return 'red';
+            if (result.startsWith('black wins')) return 'black';
+            if (result.startsWith('draw')) return 'draw';
+            return null;
+        }
+
+        function localizePlayerLabel(label) {
+            const text = String(label || '').trim();
+            if (text === 'Human') return t('settings.human');
+            if (text === 'Random') return t('settings.random');
+            if (text === 'Pikafish') return t('settings.pikafish');
+            const llmMatch = text.match(/^LLM \((.+)\)$/);
+            if (llmMatch && i18n.getLanguage() === 'zh') return `LLM（${llmMatch[1]}）`;
+            return text;
+        }
+
+        function applyStaticText() {
+            i18n.applyI18nAttributes(document);
+            document.title = t('page.leaderboardTitle');
+            document.getElementById('ui-language-select').value = i18n.getLanguage();
+        }
 
         async function loadData() {
             const container = document.getElementById('table-container');
@@ -227,47 +287,44 @@
                 const logs = data.logs || [];
 
                 if (logs.length === 0) {
-                    container.innerHTML = '<div class="empty-state">No games played yet.</div>';
+                    container.innerHTML = `<div class="empty-state">${escapeHtml(t('leaderboard.empty'))}</div>`;
                     return;
                 }
 
-                // Global stats
-                let totalRedWins = 0, totalBlackWins = 0, totalDraws = 0;
+                let totalRedWins = 0;
+                let totalBlackWins = 0;
+                let totalDraws = 0;
                 const stats = {};
 
                 for (const log of logs) {
-                    const redWin = log.result.includes('red wins');
-                    const blackWin = log.result.includes('black wins');
-
-                    if (redWin) totalRedWins++;
-                    else if (blackWin) totalBlackWins++;
-                    else totalDraws++;
+                    const winner = getWinner(log);
+                    if (winner === 'red') totalRedWins++;
+                    else if (winner === 'black') totalBlackWins++;
+                    else if (winner === 'draw') totalDraws++;
 
                     for (const label of [log.red_label, log.black_label]) {
                         if (!label) continue;
                         if (!stats[label]) stats[label] = { wins: 0, losses: 0, draws: 0 };
                     }
 
-                    if (redWin) {
-                        stats[log.red_label].wins++;
-                        stats[log.black_label].losses++;
-                    } else if (blackWin) {
-                        stats[log.black_label].wins++;
-                        stats[log.red_label].losses++;
+                    if (winner === 'red') {
+                        if (stats[log.red_label]) stats[log.red_label].wins++;
+                        if (stats[log.black_label]) stats[log.black_label].losses++;
+                    } else if (winner === 'black') {
+                        if (stats[log.black_label]) stats[log.black_label].wins++;
+                        if (stats[log.red_label]) stats[log.red_label].losses++;
                     } else {
                         if (stats[log.red_label]) stats[log.red_label].draws++;
                         if (stats[log.black_label]) stats[log.black_label].draws++;
                     }
                 }
 
-                // Summary
                 document.getElementById('sum-total').textContent = logs.length;
                 document.getElementById('sum-players').textContent = Object.keys(stats).length;
                 document.getElementById('sum-red').textContent = totalRedWins;
                 document.getElementById('sum-black').textContent = totalBlackWins;
                 document.getElementById('sum-draw').textContent = totalDraws;
 
-                // Sort
                 const entries = Object.entries(stats).map(([name, s]) => {
                     const total = s.wins + s.losses + s.draws;
                     const winRate = total > 0 ? s.wins / total : 0;
@@ -275,32 +332,31 @@
                 });
                 entries.sort((a, b) => b.wins - a.wins || b.winRate - a.winRate || a.losses - b.losses);
 
-                // Render table
                 let html = `<table class="lb-table">
                     <thead><tr>
-                        <th class="num">#</th>
-                        <th>Player</th>
-                        <th class="stat">W</th>
-                        <th class="stat">L</th>
-                        <th class="stat">D</th>
-                        <th class="rate">Win Rate</th>
+                        <th class="num">${escapeHtml(t('leaderboard.rank'))}</th>
+                        <th>${escapeHtml(t('leaderboard.player'))}</th>
+                        <th class="stat">${escapeHtml(t('leaderboard.win'))}</th>
+                        <th class="stat">${escapeHtml(t('leaderboard.loss'))}</th>
+                        <th class="stat">${escapeHtml(t('leaderboard.draw'))}</th>
+                        <th class="rate">${escapeHtml(t('leaderboard.winRate'))}</th>
                     </tr></thead><tbody>`;
 
-                entries.forEach((e, i) => {
-                    const rank = i + 1;
+                entries.forEach((entry, index) => {
+                    const rank = index + 1;
                     const rankCls = rank <= 3 ? ` rank-${rank}` : '';
-                    const pct = Math.round(e.winRate * 100);
+                    const pct = Math.round(entry.winRate * 100);
                     const rateCls = pct >= 60 ? 'high' : pct >= 40 ? 'mid' : 'low';
 
                     html += `<tr>
                         <td class="num${rankCls}">${rank}</td>
                         <td>
-                            <div class="player-name">${escapeHtml(e.name)}</div>
-                            <div class="player-games">${e.total} games</div>
+                            <div class="player-name">${escapeHtml(localizePlayerLabel(entry.name))}</div>
+                            <div class="player-games">${escapeHtml(t('leaderboard.gamesCount', { count: entry.total }))}</div>
                         </td>
-                        <td class="stat stat-w">${e.wins}</td>
-                        <td class="stat stat-l">${e.losses}</td>
-                        <td class="stat stat-d">${e.draws}</td>
+                        <td class="stat stat-w">${entry.wins}</td>
+                        <td class="stat stat-l">${entry.losses}</td>
+                        <td class="stat stat-d">${entry.draws}</td>
                         <td class="rate">
                             <div class="rate-bar">
                                 <span class="rate-${rateCls}">${pct}%</span>
@@ -312,13 +368,22 @@
 
                 html += '</tbody></table>';
                 container.innerHTML = html;
-            } catch (e) {
-                container.innerHTML = '<div class="empty-state">Failed to load data.</div>';
+            } catch (_) {
+                container.innerHTML = `<div class="empty-state">${escapeHtml(t('leaderboard.failed'))}</div>`;
             }
         }
 
+        applyStaticText();
+        document.getElementById('ui-language-select').addEventListener('change', (event) => {
+            i18n.setLanguage(event.target.value);
+        });
+        document.getElementById('btn-refresh').addEventListener('click', loadData);
+        document.addEventListener('battlechess:languagechange', () => {
+            applyStaticText();
+            loadData();
+        });
+
         loadData();
-        // Auto-refresh every 30 seconds
         setInterval(loadData, 30000);
     </script>
 </body>

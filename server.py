@@ -308,12 +308,28 @@ _RE_GAME_LINE = re.compile(r"^Game:\s+(\S+)\s+\|\s+(.+)$")
 _RE_PLAYERS_LINE = re.compile(r"^Red:\s+(.+?)\s{2,}vs\s{2,}Black:\s+(.+)$")
 _RE_INITIAL_FEN = re.compile(r"^Initial FEN:\s+(.+)$")
 _RE_RESULT = re.compile(r"^Result:\s+(.+)$")
+_RE_RESULT_WINNER = re.compile(r"^(red|black)\s+wins(?:\s*-\s*(.+))?$", re.IGNORECASE)
 _RE_MOVES_HEADER = re.compile(r"^Moves\s+\((\d+)\):")
 _RE_MOVE_LINE = re.compile(
     r"^\s*#(\d+)\s+(red|black):\s+(\S+)"
     r"(?:\s+\(([^)]+)\))?"
     r"(?:\s+x(\S+))?$"
 )
+
+
+def _parse_result_fields(result_text: str) -> tuple[Optional[str], str]:
+    text = (result_text or "").strip()
+    lower = text.lower()
+    if not text or lower == "unfinished":
+        return None, ""
+    if lower == "draw":
+        return "draw", ""
+    if lower.startswith("draw - "):
+        return "draw", text[7:].strip()
+    match = _RE_RESULT_WINNER.match(text)
+    if match:
+        return match.group(1).lower(), (match.group(2) or "").strip()
+    return None, text
 
 
 def parse_game_log(filepath: str, include_moves: bool = True) -> dict:
@@ -329,6 +345,8 @@ def parse_game_log(filepath: str, include_moves: bool = True) -> dict:
         "black_label": "",
         "initial_fen": "",
         "result": "",
+        "winner": None,
+        "reason": "",
         "move_count": 0,
     }
 
@@ -358,6 +376,9 @@ def parse_game_log(filepath: str, include_moves: bool = True) -> dict:
         m = _RE_RESULT.match(line)
         if m:
             result["result"] = m.group(1).strip()
+            winner, reason = _parse_result_fields(result["result"])
+            result["winner"] = winner
+            result["reason"] = reason
             continue
 
         m = _RE_MOVES_HEADER.match(line)
@@ -591,7 +612,7 @@ def _finish_game_on_timeout(game: GameSession, side: str, side_name: str):
     else:
         game.timer_black = 0
     _broadcast_timer(game)
-    _finish_game(game, winner, f"{side_name} ran out of time (超时判负)")
+    _finish_game(game, winner, f"{side_name} ran out of time")
 
 
 async def _run_with_turn_timeout(
@@ -957,7 +978,7 @@ async def _game_loop_inner(game: GameSession):
                 if game.timer_red <= 0:
                     game.timer_red = 0
                     _broadcast_timer(game)
-                    _finish_game(game, "black", f"{side_name} ran out of time (超时判负)")
+                    _finish_game(game, "black", f"{side_name} ran out of time")
                     return
                 game.timer_red += game.timer_config.increment
             else:
@@ -965,7 +986,7 @@ async def _game_loop_inner(game: GameSession):
                 if game.timer_black <= 0:
                     game.timer_black = 0
                     _broadcast_timer(game)
-                    _finish_game(game, "red", f"{side_name} ran out of time (超时判负)")
+                    _finish_game(game, "red", f"{side_name} ran out of time")
                     return
                 game.timer_black += game.timer_config.increment
             _broadcast_timer(game)
