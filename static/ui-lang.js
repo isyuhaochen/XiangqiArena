@@ -14,6 +14,7 @@
             header: {
                 ready: '就绪',
                 leaderboard: '排行榜',
+                backToMain: '主界面',
                 language: '界面语言',
             },
             lang: {
@@ -276,6 +277,7 @@
             header: {
                 ready: 'Ready',
                 leaderboard: 'Leaderboard',
+                backToMain: 'Main',
                 language: 'Language',
             },
             lang: {

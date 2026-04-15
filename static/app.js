@@ -3824,11 +3824,15 @@ function toggleLeaderboard() {
         page.classList.add('hidden');
         main.style.display = '';
         btn.classList.remove('active');
+        btn.textContent = t('header.leaderboard');
+        btn.dataset.i18n = 'header.leaderboard';
         statusBar.style.display = '';
     } else {
         page.classList.remove('hidden');
         main.style.display = 'none';
         btn.classList.add('active');
+        btn.textContent = t('header.backToMain');
+        btn.dataset.i18n = 'header.backToMain';
         statusBar.style.display = 'none';
         loadLeaderboard();
     }
